@@ -182,6 +182,10 @@ binary protocol, the PollScheduler, no event-loop blocking, no crashes.
 > EL8 OpenSSL 1.1 vs Ubuntu 22+ OpenSSL 3), so the linux prebuilds are NOT portable until
 > `BRK_STATIC_DEPS` (static deps) is implemented; cyrus-sasl intentionally left out of CI
 > builds for the same reason (builtin PLAIN/SCRAM/OAUTHBEARER unaffected, GSSAPI absent).
+> Feature gate: `test/unit/native-features.test.ts` asserts every prebuilt ships with
+> gzip/snappy/lz4/zstd/ssl/sasl_scram/sasl_oauthbearer (runs in the `unit` job on the
+> linux-x64 and darwin-arm64 artifacts). TODO: add a Windows `unit` job so the win32-x64
+> artifact gets the same gate — currently only build-verified.
 
 - [x] Distribution scripts (`install.ts`/`install-plan.ts`/`prepack.ts`/`postpack.ts`) + loader `prebuilds/` resolution + unit/integration tests (local mirror).
 - [x] `release.yml`: dispatch bump (patch/minor/major) → changelog from Conventional Commits → tag → build → package assets + SHA256SUMS → GitHub Release → npm publish `@vnstrawhat/bun-rdkafka` with provenance, secret-gated, idempotent.
