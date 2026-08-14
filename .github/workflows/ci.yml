@@ -1,0 +1,200 @@
+name: CI
+
+# M0 scope (docs/03-implementation-plan.md): build-native (5 target Tier-1) + lint-type +
+# unit. integration/bench-smoke jobs (docs/02-detail-design.md §10.1) come in a later milestone.
+#
+# `workflow_call` lets release.yml (tag v*) reuse this workflow's entire build-native matrix
+# instead of duplicating the job definition.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_call:
+
+# Cancel duplicate runs on the same PR/branch when a new push arrives.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # ASSUMPTION: native/CMakeLists.txt doesn't exist yet -- pin the toolchain version here so
+  # the AlmaLinux 8 job can build the modern C11/C17 that librdkafka requires.
+  GCC_TOOLSET: gcc-toolset-13
+
+jobs:
+  # ---------------------------------------------------------------------------------------
+  # build-native: 5-target Tier-1 matrix (docs/01-spec.md §6, docs/02-detail-design.md §9.2)
+  # ---------------------------------------------------------------------------------------
+  build-native:
+    name: build-native (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Target names are the loader's platform keys — release assets are named
+          # libbunrdkafka-<target>.tar.gz and scripts/install.ts downloads by this key.
+          - target: linux-x64-gnu
+            os: ubuntu-24.04
+            container: "almalinux:8"
+          - target: linux-arm64-gnu
+            os: ubuntu-24.04-arm
+            container: "almalinux:8"
+          - target: darwin-x64
+            os: macos-13
+            container: ""
+          - target: darwin-arm64
+            os: macos-14
+            container: ""
+          - target: win32-x64
+            os: windows-2022
+            container: ""
+    steps:
+      # The AlmaLinux 8 container has no git/cmake/compiler by default -- install them before
+      # checkout (actions/checkout needs `git` to already be available in the container).
+      - name: Install toolchain (AlmaLinux 8 container)
+        if: matrix.container == 'almalinux:8'
+        run: |
+          dnf install -y \
+            ${GCC_TOOLSET}-gcc \
+            ${GCC_TOOLSET}-gcc-c++ \
+            cmake \
+            make \
+            git-core \
+            perl-IPC-Cmd \
+            which \
+            tar \
+            gzip \
+            openssl-devel \
+            zlib-devel
+          echo "PATH=/opt/rh/${GCC_TOOLSET}/root/usr/bin:$PATH" >> "$GITHUB_ENV"
+          echo "CC=/opt/rh/${GCC_TOOLSET}/root/usr/bin/gcc" >> "$GITHUB_ENV"
+          echo "CXX=/opt/rh/${GCC_TOOLSET}/root/usr/bin/g++" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v4
+
+      - name: Ensure CMake present (macOS)
+        if: runner.os == 'macOS'
+        run: command -v cmake >/dev/null 2>&1 || brew install cmake
+
+      # The windows-2022 runner image already has vcpkg installed at C:\vcpkg (VCPKG_INSTALLATION_ROOT).
+      # ASSUMPTION: native/vcpkg.json exists (manifest mode), triplet x64-windows-static-md
+      # as described in docs/02-detail-design.md §9.2 -- CMake will automatically run
+      # `vcpkg install` during configure with the toolchain file below.
+      - name: Cache vcpkg packages (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:/vcpkg/installed
+            native/build/vcpkg_installed
+          key: vcpkg-${{ matrix.target }}-${{ hashFiles('native/vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ matrix.target }}-
+
+      # librdkafka is pulled in via CMake FetchContent (per librdkafka.version) -- cache the
+      # _deps directory to avoid downloading + rebuilding from scratch on every CI run.
+      - name: Cache CMake FetchContent (_deps)
+        uses: actions/cache@v4
+        with:
+          path: native/build/_deps
+          key: fetchcontent-${{ matrix.target }}-${{ hashFiles('librdkafka.version', 'native/CMakeLists.txt') }}
+          restore-keys: |
+            fetchcontent-${{ matrix.target }}-
+
+      - name: Configure (CMake)
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cmake -B build -S native \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
+              -DVCPKG_TARGET_TRIPLET=x64-windows-static-md
+          else
+            cmake -B build -S native -DCMAKE_BUILD_TYPE=Release
+          fi
+
+      - name: Build (CMake)
+        run: cmake --build build --config Release --parallel
+
+      - name: Stage artifact
+        run: |
+          mkdir -p dist
+          # ASSUMPTION: the output sits somewhere under build/ (the exact path depends on the
+          # generator -- Ninja: build/, Visual Studio multi-config: build/Release/). Search by
+          # file name/extension instead of hard-coding the path so this doesn't depend on the
+          # generator.
+          find build -type f \( -name "libbunrdkafka.so" -o -name "libbunrdkafka.dylib" -o -name "libbunrdkafka.dll" -o -name "bunrdkafka.dll" \) -exec cp {} dist/ \;
+          ls -la dist
+          test -n "$(ls -A dist)" || (echo "::error::no built library found under build/" && exit 1)
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------------------
+  # lint-type: tsc --noEmit across the whole repo (no native binary needed)
+  # ---------------------------------------------------------------------------------------
+  lint-type:
+    name: lint-type
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install
+
+      - name: Type-check
+        run: bunx tsc --noEmit
+
+  # ---------------------------------------------------------------------------------------
+  # unit: bun test test/unit on ubuntu + macos-14, using the binary from build-native
+  # ---------------------------------------------------------------------------------------
+  unit:
+    name: unit (${{ matrix.os }})
+    needs: build-native
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            native_target: linux-x64-gnu
+          - os: macos-14
+            native_target: darwin-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install
+
+      - name: Download native artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: native-${{ matrix.native_target }}
+          path: native-lib
+
+      - name: Export BUN_RDKAFKA_LIB_PATH
+        run: |
+          LIB_FILE="$(find native-lib -type f \( -name '*.so' -o -name '*.dylib' -o -name '*.dll' \) | head -n1)"
+          if [ -z "$LIB_FILE" ]; then
+            echo "::error::no native library found in the downloaded artifact"
+            exit 1
+          fi
+          echo "BUN_RDKAFKA_LIB_PATH=$(cd "$(dirname "$LIB_FILE")" && pwd)/$(basename "$LIB_FILE")" >> "$GITHUB_ENV"
+
+      - name: bun test test/unit
+        run: bun test test/unit

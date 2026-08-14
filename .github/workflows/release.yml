@@ -1,0 +1,192 @@
+name: Release
+
+# M7 pipeline (docs/02-detail-design.md §9–§10). Two entry points:
+#
+#   1. workflow_dispatch with a version-bump choice (patch/minor/major): the
+#      `prepare` job bumps packages/bun-rdkafka/package.json, generates the
+#      CHANGELOG.md section from Conventional Commits (scripts/changelog.ts),
+#      commits, tags v<next>, and pushes. The SAME run then builds and releases
+#      (a tag pushed with GITHUB_TOKEN would not trigger a second run anyway —
+#      GitHub suppresses recursive workflow triggers).
+#   2. Pushing a `v*` tag manually still works (prepare is skipped; the tag's
+#      commit must already carry the matching package.json version).
+#
+# Ordering matters: the GitHub Release (with binary assets) MUST exist before
+# the npm publish — postinstall of the published version downloads from it.
+#
+# Note: the native build reuses ci.yml at the triggering SHA. For dispatch runs
+# that is the pre-bump commit, which is fine — the release commit only touches
+# package.json/CHANGELOG.md, never the native sources.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options: [patch, minor, major]
+
+permissions:
+  contents: write
+
+jobs:
+  # Bumps the version, generates the changelog, commits and tags (dispatch only).
+  prepare:
+    name: prepare (${{ inputs.bump }})
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history + tags for the changelog range
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Bump version, generate changelog, commit and tag
+        id: bump
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          (cd packages/bun-rdkafka && npm version "${{ inputs.bump }}" --no-git-tag-version)
+          next="$(bun -e 'console.log(JSON.parse(await Bun.file("packages/bun-rdkafka/package.json").text()).version)')"
+          echo "next version: $next"
+
+          bun scripts/changelog.ts --next "$next" --notes-file release-notes.md
+
+          git add packages/bun-rdkafka/package.json CHANGELOG.md
+          git commit -m "chore(release): v${next}"
+          git tag "v${next}"
+          git push origin HEAD "refs/tags/v${next}"
+          echo "tag=v${next}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+
+  # Reuses ci.yml's entire build-native matrix (+ lint-type, unit) -- runs within the same
+  # workflow run, so the artifacts uploaded here can be downloaded again right below.
+  build:
+    needs: [prepare]
+    if: ${{ !failure() && !cancelled() }} # prepare is skipped on tag pushes
+    uses: ./.github/workflows/ci.yml
+
+  package-and-release:
+    name: package-and-release
+    needs: [prepare, build]
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-24.04
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag || github.ref_name }}
+
+      - name: Download all native-* artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: artifacts
+
+      - name: Package libbunrdkafka-<target>.tar.gz + SHA256SUMS
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          for dir in artifacts/native-*; do
+            target="$(basename "$dir" | sed 's/^native-//')"
+            tar -C "$dir" -czf "release-assets/libbunrdkafka-${target}.tar.gz" .
+          done
+          (cd release-assets && sha256sum -- *.tar.gz > SHA256SUMS)
+          ls -la release-assets
+
+      - name: Download generated release notes (dispatch runs)
+        if: needs.prepare.outputs.tag != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+
+      - name: Create GitHub Release (generated changelog body)
+        if: needs.prepare.outputs.tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          body_path: release-notes.md
+          files: |
+            release-assets/*.tar.gz
+            release-assets/SHA256SUMS
+
+      - name: Create GitHub Release (tag push, auto notes)
+        if: needs.prepare.outputs.tag == ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          files: |
+            release-assets/*.tar.gz
+            release-assets/SHA256SUMS
+
+  # Publishes the single `@vnstrawhat/bun-rdkafka` package. Runs only after the
+  # GitHub Release exists (postinstall of the published version downloads assets
+  # from it). Skips gracefully when the NPM_TOKEN secret is not configured
+  # (secrets are not readable in job-level `if`, so the gate lives inside the
+  # step). Idempotent: re-running a tag skips versions already on the registry.
+  publish-npm:
+    name: publish-npm
+    needs: [prepare, package-and-release]
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write # for `npm publish --provenance`
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag || github.ref_name }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Verify the package version matches the tag
+        run: |
+          set -euo pipefail
+          pkg_ver="$(bun -e 'console.log(JSON.parse(await Bun.file("packages/bun-rdkafka/package.json").text()).version)')"
+          tag_ver="${RELEASE_TAG#v}"
+          if [ "$pkg_ver" != "$tag_ver" ]; then
+            echo "::error::package.json version ($pkg_ver) != tag ($tag_ver)"
+            exit 1
+          fi
+
+      - name: npm publish (skips without NPM_TOKEN; prepack bundles native/)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::notice::NPM_TOKEN secret not set — skipping npm publish"
+            exit 0
+          fi
+          ver="${RELEASE_TAG#v}"
+          if npm view "@vnstrawhat/bun-rdkafka@${ver}" version >/dev/null 2>&1; then
+            echo "::notice::@vnstrawhat/bun-rdkafka@${ver} already published — skipping"
+            exit 0
+          fi
+          npm publish packages/bun-rdkafka --provenance --access public

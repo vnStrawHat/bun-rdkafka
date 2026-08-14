@@ -1,0 +1,12 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": ["packages/bun-rdkafka/src/index.ts"],
+  "out": "docs/api",
+  "name": "@vnstrawhat/bun-rdkafka",
+  "readme": "README.md",
+  "includeVersion": false,
+  "excludeInternal": true,
+  "excludePrivate": true,
+  "githubPages": false,
+  "treatWarningsAsErrors": false
+}

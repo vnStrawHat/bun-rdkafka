@@ -1,0 +1,10 @@
+{
+  "name": "bunrdkafka-native",
+  "version-string": "0.0.0",
+  "dependencies": [
+    {
+      "name": "librdkafka",
+      "features": ["ssl", "zstd", "lz4", "zlib"]
+    }
+  ]
+}

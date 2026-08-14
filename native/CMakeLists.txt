@@ -1,0 +1,94 @@
+# bun-rdkafka native shim — libbunrdkafka
+#
+# Build:  cmake -B build -S native && cmake --build build -j2
+# librdkafka is pinned by ../librdkafka.version (FetchContent by git tag),
+# or taken from vcpkg (find_package) on Windows / when BRK_USE_SYSTEM_RDKAFKA=ON.
+cmake_minimum_required(VERSION 3.22)
+project(bunrdkafka C)
+
+option(BRK_STATIC_DEPS "Static-link OpenSSL/zlib/zstd/lz4 (CI release build)" OFF)
+option(BRK_USE_SYSTEM_RDKAFKA "find_package(RdKafka) instead of FetchContent (vcpkg)" OFF)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+# Hidden by default for EVERY target (including the FetchContent static
+# librdkafka) — only BRK_EXPORT is exposed; this also lets macOS skip an
+# exported_symbols_list.
+set(CMAKE_C_VISIBILITY_PRESET hidden)
+set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
+# ---------------------------------------------------------------------------
+# librdkafka
+# ---------------------------------------------------------------------------
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../librdkafka.version" RDKAFKA_TAG)
+string(STRIP "${RDKAFKA_TAG}" RDKAFKA_TAG)
+
+if(WIN32 OR BRK_USE_SYSTEM_RDKAFKA)
+  # Windows CI: vcpkg manifest mode (native/vcpkg.json) provides a static librdkafka.
+  find_package(RdKafka CONFIG REQUIRED)
+  set(BRK_RDKAFKA_LIB RdKafka::rdkafka)
+else()
+  include(FetchContent)
+  set(RDKAFKA_BUILD_STATIC ON CACHE BOOL "" FORCE)
+  set(RDKAFKA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(RDKAFKA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(WITH_SSL ON CACHE BOOL "" FORCE)
+  set(WITH_ZSTD ON CACHE BOOL "" FORCE)
+  set(ENABLE_LZ4_EXT ON CACHE BOOL "" FORCE)
+  # TODO(M4/OIDC): WITH_CURL=ON is required for sasl.oauthbearer.method=oidc;
+  # the build machine needs libcurl (static for the CI release build). Currently
+  # off because libcurl-dev is missing locally.
+  set(WITH_CURL OFF CACHE BOOL "" FORCE)
+  # SASL GSSAPI via cyrus when available; PLAIN/SCRAM/OAUTHBEARER are always built in.
+  set(WITH_SASL ON CACHE BOOL "" FORCE)
+  if(BRK_STATIC_DEPS)
+    # TODO(M7): build OpenSSL/zlib/zstd/lz4 statically (ExternalProject or a
+    # container with prebuilt .a files) then point OPENSSL_ROOT_DIR/ZLIB_ROOT/...
+    # here. See design §9.2.
+    message(FATAL_ERROR "BRK_STATIC_DEPS is not implemented yet (TODO M7 — CI release)")
+  endif()
+
+  FetchContent_Declare(
+    librdkafka
+    GIT_REPOSITORY https://github.com/confluentinc/librdkafka.git
+    GIT_TAG        ${RDKAFKA_TAG}
+    GIT_SHALLOW    TRUE
+  )
+  FetchContent_MakeAvailable(librdkafka)
+  set(BRK_RDKAFKA_LIB rdkafka)
+endif()
+
+# ---------------------------------------------------------------------------
+# Shim
+# ---------------------------------------------------------------------------
+add_library(bunrdkafka SHARED
+  src/shim_common.c
+  src/shim_events.c
+  src/shim_producer.c
+  src/shim_consumer.c
+  src/shim_admin.c
+)
+# Keep the "lib" prefix on EVERY platform (MSVC included) — loader.ts looks for one name only.
+set_target_properties(bunrdkafka PROPERTIES PREFIX "lib" OUTPUT_NAME "bunrdkafka")
+target_include_directories(bunrdkafka PRIVATE include)
+target_link_libraries(bunrdkafka PRIVATE ${BRK_RDKAFKA_LIB})
+if(NOT (WIN32 OR BRK_USE_SYSTEM_RDKAFKA))
+  # FetchContent: the header lives inside librdkafka's source tree
+  target_include_directories(bunrdkafka PRIVATE ${librdkafka_SOURCE_DIR}/src)
+endif()
+
+if(MSVC)
+  target_compile_options(bunrdkafka PRIVATE /O2 /W4)
+else()
+  target_compile_options(bunrdkafka PRIVATE -O2 -Wall -Wextra)
+  target_link_libraries(bunrdkafka PRIVATE pthread m)
+endif()
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE)
+  # Do not leak static librdkafka/openssl symbols into the dynamic table
+  target_link_options(bunrdkafka PRIVATE "LINKER:--exclude-libs,ALL")
+endif()

@@ -1,0 +1,7 @@
+[test]
+# unit + conformance by default; integration runs separately via `bun run test:integration`
+root = "./test"
+
+[install]
+# the repo uses workspaces; no separate text lockfile per package
+linkWorkspacePackages = true

@@ -1,0 +1,36 @@
+# deps
+node_modules/
+
+# native build
+build/
+native/build/
+*.o
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+*.exp
+*.pdb
+
+# ts output
+dist/
+
+# generated API docs (bun run docs:api)
+docs/api/
+
+# downloaded/built prebuilt libraries (scripts/install.ts) and prepack copies
+packages/bun-rdkafka/prebuilds/
+packages/bun-rdkafka/native/
+packages/bun-rdkafka/librdkafka.version
+
+# misc
+*.log
+.DS_Store
+bench/*.local.*
+.claude
+
+# benchmark baseline — dependencies installed separately, not committed
+bench/upstream/node_modules/
+bench/upstream/bun.lock
+bench/compare/results.json

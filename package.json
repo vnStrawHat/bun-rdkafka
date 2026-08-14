@@ -1,0 +1,19 @@
+{
+  "name": "bun-rdkafka-workspace",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build:native": "cmake -S native -B native/build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build native/build",
+    "test": "bun test test/unit test/conformance",
+    "test:integration": "bun test test/integration",
+    "typecheck": "tsc --noEmit",
+    "docs:api": "typedoc"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "typedoc": "^0.28.0",
+    "typescript": "^5.7.0"
+  }
+}

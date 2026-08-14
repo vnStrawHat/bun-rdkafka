@@ -1,0 +1,8 @@
+{
+  "name": "bench-upstream",
+  "private": true,
+  "trustedDependencies": ["@confluentinc/kafka-javascript"],
+  "dependencies": {
+    "@confluentinc/kafka-javascript": "^1.10.0"
+  }
+}
