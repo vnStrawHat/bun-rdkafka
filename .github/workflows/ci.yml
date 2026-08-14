@@ -61,9 +61,12 @@ jobs:
           # machines; the builtin SASL PLAIN/SCRAM/OAUTHBEARER mechanisms don't need it.
           dnf install -y dnf-plugins-core
           dnf config-manager --set-enabled powertools
+          # epel-release: only for ccache (compiler cache — see the cache steps below).
+          dnf install -y epel-release
           dnf install -y \
             ${GCC_TOOLSET}-gcc \
             ${GCC_TOOLSET}-gcc-c++ \
+            ccache \
             cmake \
             make \
             git-core \
@@ -78,6 +81,7 @@ jobs:
           echo "PATH=/opt/rh/${GCC_TOOLSET}/root/usr/bin:$PATH" >> "$GITHUB_ENV"
           echo "CC=/opt/rh/${GCC_TOOLSET}/root/usr/bin/gcc" >> "$GITHUB_ENV"
           echo "CXX=/opt/rh/${GCC_TOOLSET}/root/usr/bin/g++" >> "$GITHUB_ENV"
+          echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v4
 
@@ -85,26 +89,47 @@ jobs:
       # ASSUMPTION: native/vcpkg.json exists (manifest mode), triplet x64-windows-static-md
       # as described in docs/02-detail-design.md §9.2 -- CMake will automatically run
       # `vcpkg install` during configure with the toolchain file below.
-      - name: Cache vcpkg packages (Windows)
+      # vcpkg binary cache: vcpkg's default "files" binary provider writes package
+      # archives to %LOCALAPPDATA%\vcpkg\archives — caching that directory means a
+      # rebuild restores openssl/zstd/zlib from archives instead of compiling them
+      # from source (the dominant cost of the Windows job). build/vcpkg_installed is
+      # cached too so an unchanged manifest skips the install step entirely.
+      # (Deliberately NOT using the x-gha binary source: it depends on runner cache
+      # protocol details; the archives directory works with any vcpkg version.)
+      - name: Cache vcpkg binary archives (Windows)
         if: runner.os == 'Windows'
         uses: actions/cache@v4
         with:
           path: |
-            C:/vcpkg/installed
-            native/build/vcpkg_installed
+            ~\AppData\Local\vcpkg\archives
+            build/vcpkg_installed
           key: vcpkg-${{ matrix.target }}-${{ hashFiles('native/vcpkg.json') }}
           restore-keys: |
             vcpkg-${{ matrix.target }}-
 
       # librdkafka is pulled in via CMake FetchContent (per librdkafka.version) -- cache the
-      # _deps directory to avoid downloading + rebuilding from scratch on every CI run.
+      # _deps directory (source + subbuild stamps) to skip the clone/download on every run.
+      # NOTE: the CI build dir is ./build (cmake -B build), NOT native/build (the dev path).
       - name: Cache CMake FetchContent (_deps)
         uses: actions/cache@v4
         with:
-          path: native/build/_deps
+          path: build/_deps
           key: fetchcontent-${{ matrix.target }}-${{ hashFiles('librdkafka.version', 'native/CMakeLists.txt') }}
           restore-keys: |
             fetchcontent-${{ matrix.target }}-
+
+      # ccache makes recompiles content-addressed, so librdkafka's ~150 C files become
+      # cache hits even though checkout refreshes file mtimes (which defeats naive
+      # build-directory caching under make). Key on the SHA so the updated cache is
+      # re-saved every run; restore-keys picks the most recent previous cache.
+      - name: Cache ccache (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ matrix.target }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ matrix.target }}-
 
       - name: Configure (CMake)
         run: |
@@ -114,11 +139,17 @@ jobs:
               -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
               -DVCPKG_TARGET_TRIPLET=x64-windows-static-md
           else
-            cmake -B build -S native -DCMAKE_BUILD_TYPE=Release
+            cmake -B build -S native -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           fi
 
       - name: Build (CMake)
         run: cmake --build build --config Release --parallel
+
+      - name: ccache stats (Linux)
+        if: runner.os == 'Linux'
+        run: ccache -s || true
 
       - name: Stage artifact
         run: |
@@ -151,6 +182,14 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Cache bun install cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
       - run: bun install
 
       - name: Type-check
@@ -175,6 +214,14 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
+      - name: Cache bun install cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
 
       - run: bun install
 
