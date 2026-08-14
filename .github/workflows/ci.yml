@@ -60,6 +60,14 @@ jobs:
       - name: Install toolchain (AlmaLinux 8 container)
         if: matrix.container == 'almalinux:8'
         run: |
+          # libzstd-devel / lz4-devel live in the PowerTools (CRB) repo on EL8 — enable it
+          # first. librdkafka's CMake hard-requires zstd headers (WITH_ZSTD=ON) and prefers
+          # an external lz4 (ENABLE_LZ4_EXT=ON). cyrus-sasl-devel is deliberately NOT
+          # installed: the prebuilt would pick up a dynamic libsasl2.so.3 dependency whose
+          # soname differs across distros (Debian ships .so.2), breaking dlopen on user
+          # machines; the builtin SASL PLAIN/SCRAM/OAUTHBEARER mechanisms don't need it.
+          dnf install -y dnf-plugins-core
+          dnf config-manager --set-enabled powertools
           dnf install -y \
             ${GCC_TOOLSET}-gcc \
             ${GCC_TOOLSET}-gcc-c++ \
@@ -71,16 +79,29 @@ jobs:
             tar \
             gzip \
             openssl-devel \
-            zlib-devel
+            zlib-devel \
+            libzstd-devel \
+            lz4-devel
           echo "PATH=/opt/rh/${GCC_TOOLSET}/root/usr/bin:$PATH" >> "$GITHUB_ENV"
           echo "CC=/opt/rh/${GCC_TOOLSET}/root/usr/bin/gcc" >> "$GITHUB_ENV"
           echo "CXX=/opt/rh/${GCC_TOOLSET}/root/usr/bin/g++" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v4
 
-      - name: Ensure CMake present (macOS)
+      - name: Install build deps (macOS)
         if: runner.os == 'macOS'
-        run: command -v cmake >/dev/null 2>&1 || brew install cmake
+        # Same failure class as the AlmaLinux zstd miss: librdkafka's CMake hard-requires
+        # zstd (WITH_ZSTD=ON) and OpenSSL. brew openssl@3 is keg-only, so hint
+        # OPENSSL_ROOT_DIR; put the brew prefix on CMAKE_PREFIX_PATH for zstd/lz4.
+        # (Not yet exercised on a real runner — most of these come preinstalled on
+        # GitHub macOS images and `brew install` is then a no-op.)
+        run: |
+          command -v cmake >/dev/null 2>&1 || brew install cmake
+          brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
+          brew list zstd >/dev/null 2>&1 || brew install zstd
+          brew list lz4 >/dev/null 2>&1 || brew install lz4
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix)" >> "$GITHUB_ENV"
 
       # The windows-2022 runner image already has vcpkg installed at C:\vcpkg (VCPKG_INSTALLATION_ROOT).
       # ASSUMPTION: native/vcpkg.json exists (manifest mode), triplet x64-windows-static-md

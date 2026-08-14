@@ -1,10 +1,12 @@
 {
   "name": "bunrdkafka-native",
   "version-string": "0.0.0",
+  "$comment1": "The librdkafka vcpkg port has NO 'lz4' feature (librdkafka bundles lz4 internally); valid features are curl/sasl/ssl/zlib/zstd.",
+  "$comment2": "Version skew: the windows-2022 runner ships a vcpkg snapshot whose librdkafka port may lag the tag pinned in ../librdkafka.version (e.g. 2.14.2 vs 2.15.0). TODO(M7): unify Windows onto FetchContent or pin a vcpkg builtin-baseline — decide before the first release.",
   "dependencies": [
     {
       "name": "librdkafka",
-      "features": ["ssl", "zstd", "lz4", "zlib"]
+      "features": ["ssl", "zstd", "zlib"]
     }
   ]
 }

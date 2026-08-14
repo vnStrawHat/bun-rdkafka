@@ -137,8 +137,10 @@ binary protocol, the PollScheduler, no event-loop blocking, no crashes.
 > (prebuilt tops out at NODE_MODULE_VERSION 137 < 147), so the on-Node ratio is the
 > comparison, per user decision; (d) **M6d produce 1-copy**: PRODUCE BATCH now
 > pointer-based for key/value (single F_COPY in C; 310 unit + 61 integration green).
-> **Final G3 verdict**: consumer **2.4×**, producer 100B **1.44×** — MET (4/6 cases
-> ≥1.2×); producer 1KB unbounded-burst microbench **0.74–0.78× — NOT MET on this
+> **Final G3 verdict** (consolidated single-session run on HEAD, see RESULTS.md
+> "Final consolidated run"): consumer **2.48×**, producer 100B **1.38–1.47×** — MET
+> (4/6 cases ≥1.2×); producer 1KB unbounded-burst microbench **0.63–0.81× across
+> sessions — NOT MET on this
 > 4 vCPU shared-broker box**; the cause is NOT client CPU (ours is lower) but
 > burst-enqueue vs paced-enqueue pipeline overlap — with a bounded queue
 > (max.messages 65k) the 1KB case reaches parity or better (§M6d analysis).
@@ -170,6 +172,16 @@ binary protocol, the PollScheduler, no event-loop blocking, no crashes.
 > release-before-publish ordering); manual `v*` tag pushes also work. Remaining: push
 > to GitHub, verify CI on all 5 targets, trial release end-to-end, clean-machine
 > install checks.
+> First-CI fixes (2026-08-14): AlmaLinux container was missing `libzstd-devel`/`lz4-devel`
+> (PowerTools repo now enabled); vcpkg manifest requested a nonexistent `lz4` feature
+> (librdkafka bundles lz4). **TODO before the first release:** (a) Windows vcpkg
+> version skew — the runner's vcpkg snapshot ships an older librdkafka port (2.14.2 seen)
+> than the pin in `librdkafka.version`; unify Windows onto FetchContent or pin a vcpkg
+> `builtin-baseline`, and decide. (b) Prebuilt portability: non-Windows binaries currently
+> link system libssl/libzstd/liblz4 dynamically — sonames differ across distros (e.g.
+> EL8 OpenSSL 1.1 vs Ubuntu 22+ OpenSSL 3), so the linux prebuilds are NOT portable until
+> `BRK_STATIC_DEPS` (static deps) is implemented; cyrus-sasl intentionally left out of CI
+> builds for the same reason (builtin PLAIN/SCRAM/OAUTHBEARER unaffected, GSSAPI absent).
 
 - [x] Distribution scripts (`install.ts`/`install-plan.ts`/`prepack.ts`/`postpack.ts`) + loader `prebuilds/` resolution + unit/integration tests (local mirror).
 - [x] `release.yml`: dispatch bump (patch/minor/major) → changelog from Conventional Commits → tag → build → package assets + SHA256SUMS → GitHub Release → npm publish `@vnstrawhat/bun-rdkafka` with provenance, secret-gated, idempotent.
