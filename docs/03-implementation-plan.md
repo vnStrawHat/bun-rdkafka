@@ -170,7 +170,9 @@ binary protocol, the PollScheduler, no event-loop blocking, no crashes.
 > Conventional-Commits changelog (`scripts/changelog.ts`) → commit + tag** → build →
 > GitHub Release (changelog as notes) → npm publish (gated on NPM_TOKEN, idempotent,
 > release-before-publish ordering); manual `v*` tag pushes also work. Remaining: push
-> to GitHub, verify CI on all 5 targets, trial release end-to-end, clean-machine
+> to GitHub, verify CI on the prebuilt targets (matrix reduced to 3 on 2026-08-14:
+> linux-x64-gnu, linux-arm64-gnu, win32-x64 — darwin dropped, macOS falls back to
+> the installer's source build), trial release end-to-end, clean-machine
 > install checks.
 > First-CI fixes (2026-08-14): AlmaLinux container was missing `libzstd-devel`/`lz4-devel`
 > (PowerTools repo now enabled); vcpkg manifest requested a nonexistent `lz4` feature
@@ -189,7 +191,7 @@ binary protocol, the PollScheduler, no event-loop blocking, no crashes.
 
 - [x] Distribution scripts (`install.ts`/`install-plan.ts`/`prepack.ts`/`postpack.ts`) + loader `prebuilds/` resolution + unit/integration tests (local mirror).
 - [x] `release.yml`: dispatch bump (patch/minor/major) → changelog from Conventional Commits → tag → build → package assets + SHA256SUMS → GitHub Release → npm publish `@vnstrawhat/bun-rdkafka` with provenance, secret-gated, idempotent.
-- [ ] Trial release (e.g. `v0.1.0`) end-to-end; clean-machine installs on all 5 targets (simulated CI job), including the Bun `trustedDependencies` path.
+- [ ] Trial release (e.g. `v0.1.0`) end-to-end; clean-machine installs on the 3 prebuilt targets (simulated CI job), including the Bun `trustedDependencies` path, plus one macOS source-build-fallback check.
 - **DoD:** pushing one tag completes the entire release chain with no manual intervention.
 
 ## M8 — Documentation & v1.0 (1 week)

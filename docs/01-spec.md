@@ -118,10 +118,9 @@ no-postinstall model; see design ADR-8.)*
 |--------|------|---------|
 | linux-x64 (glibc ≥ 2.28) | 1 | built on a manylinux-equivalent (AlmaLinux 8 container) |
 | linux-arm64 (glibc ≥ 2.28) | 1 | GitHub `ubuntu-24.04-arm` runner |
-| darwin-arm64 (macOS ≥ 12) | 1 | `macos-14` runner |
-| darwin-x64 (macOS ≥ 12) | 1 | `macos-13` runner |
 | win32-x64 | 1 | `windows-2022` runner, MSVC |
-| linux-{x64,arm64}-musl | 2 (later) | Alpine; needs a separate build since Bun ships a musl build |
+| darwin-arm64 / darwin-x64 (macOS ≥ 12) | 2 (source build) | dropped from the CI prebuilt matrix (decision 2026-08-14); the installer falls back to building from source on macOS (needs cmake + a C compiler) |
+| linux-{x64,arm64}-musl | 2 (source build) | Alpine; the installer falls back to building from source |
 | win32-arm64 | 2 (later) | when GitHub runners are available |
 
 Minimum Bun: **1.2** (stable `bun:ffi`, `dlopen`, `FinalizationRegistry`).
