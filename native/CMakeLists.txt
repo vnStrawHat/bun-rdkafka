@@ -44,8 +44,21 @@ else()
   # the build machine needs libcurl (static for the CI release build). Currently
   # off because libcurl-dev is missing locally.
   set(WITH_CURL OFF CACHE BOOL "" FORCE)
-  # SASL GSSAPI via cyrus when available; PLAIN/SCRAM/OAUTHBEARER are always built in.
-  set(WITH_SASL ON CACHE BOOL "" FORCE)
+  # SASL: PLAIN is always compiled in (rdkafka_sasl_plain.c is unconditional) and
+  # SCRAM/OAUTHBEARER only need SSL. Cyrus (libsasl2 → GSSAPI/Kerberos) is
+  # deliberately DISABLED for portability: prebuilt binaries must not link
+  # libsasl2 dynamically — its soname differs across distros (EL8 ships .so.3,
+  # Debian .so.2), which would break the downloaded prebuilt on other distros.
+  # librdkafka's CMake force-enables cyrus (plain set(), not overridable) whenever
+  # WITH_SASL=ON on non-Windows, so instead we turn WITH_SASL off and pre-seed the
+  # SCRAM/OAUTHBEARER flags ourselves: plain parent-scope variables are inherited
+  # by the FetchContent subdirectory, and the if(WITH_SASL) branch that would
+  # overwrite them never runs. No librdkafka source file uses the bare WITH_SASL
+  # macro (verified against v2.15.0). Net effect: PLAIN/SCRAM/OAUTHBEARER work,
+  # GSSAPI is absent — build from source with cyrus-sasl to enable it.
+  set(WITH_SASL OFF CACHE BOOL "" FORCE)
+  set(WITH_SASL_SCRAM ON)
+  set(WITH_SASL_OAUTHBEARER ON)
   if(BRK_STATIC_DEPS)
     # TODO(M7): build OpenSSL/zlib/zstd/lz4 statically (ExternalProject or a
     # container with prebuilt .a files) then point OPENSSL_ROOT_DIR/ZLIB_ROOT/...

@@ -8,7 +8,18 @@
 #include <string.h>
 #include <stdio.h>
 
+/* Header layout differs by provider: vcpkg installs <librdkafka/rdkafka.h>
+ * (Windows CI, BRK_USE_SYSTEM_RDKAFKA), while the FetchContent build adds
+ * librdkafka's src/ dir where the header sits flat as <rdkafka.h>. */
+#if defined(__has_include)
+#if __has_include(<librdkafka/rdkafka.h>)
+#include <librdkafka/rdkafka.h>
+#else
 #include "rdkafka.h"
+#endif
+#else
+#include "rdkafka.h"
+#endif
 #include "bunrdkafka.h"
 
 #if defined(_WIN32)
