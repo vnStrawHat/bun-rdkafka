@@ -1,7 +1,9 @@
 name: CI
 
-# M0 scope (docs/03-implementation-plan.md): build-native (5 target Tier-1) + lint-type +
-# unit. integration/bench-smoke jobs (docs/02-detail-design.md §10.1) come in a later milestone.
+# build-native (2 prebuilt targets: linux-x64-gnu, win32-x64) + lint-type + unit.
+# darwin and linux-arm64 were dropped from the prebuilt matrix on 2026-08-14 — those
+# platforms use the installer's source-build fallback instead (scripts/install.ts).
+# integration/bench-smoke jobs (docs/02-detail-design.md §10.1) come in a later milestone.
 #
 # `workflow_call` lets release.yml (tag v*) reuse this workflow's entire build-native matrix
 # instead of duplicating the job definition.
@@ -24,7 +26,7 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------------------
-  # build-native: 5-target Tier-1 matrix (docs/01-spec.md §6, docs/02-detail-design.md §9.2)
+  # build-native: 2-target prebuilt matrix (docs/01-spec.md §6, docs/02-detail-design.md §9.2)
   # ---------------------------------------------------------------------------------------
   build-native:
     name: build-native (${{ matrix.target }})
@@ -41,9 +43,6 @@ jobs:
           # libbunrdkafka-<target>.tar.gz and scripts/install.ts downloads by this key.
           - target: linux-x64-gnu
             os: ubuntu-24.04
-            container: "almalinux:8"
-          - target: linux-arm64-gnu
-            os: ubuntu-24.04-arm
             container: "almalinux:8"
           - target: win32-x64
             os: windows-2022

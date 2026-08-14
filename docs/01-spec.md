@@ -117,8 +117,8 @@ no-postinstall model; see design ADR-8.)*
 | Target | Tier | Notes |
 |--------|------|---------|
 | linux-x64 (glibc ≥ 2.28) | 1 | built on a manylinux-equivalent (AlmaLinux 8 container) |
-| linux-arm64 (glibc ≥ 2.28) | 1 | GitHub `ubuntu-24.04-arm` runner |
 | win32-x64 | 1 | `windows-2022` runner, MSVC |
+| linux-arm64 (glibc ≥ 2.28) | 2 (source build) | dropped from the CI prebuilt matrix (decision 2026-08-14); the installer falls back to building from source |
 | darwin-arm64 / darwin-x64 (macOS ≥ 12) | 2 (source build) | dropped from the CI prebuilt matrix (decision 2026-08-14); the installer falls back to building from source on macOS (needs cmake + a C compiler) |
 | linux-{x64,arm64}-musl | 2 (source build) | Alpine; the installer falls back to building from source |
 | win32-arm64 | 2 (later) | when GitHub runners are available |
@@ -145,8 +145,8 @@ Minimum Bun: **1.2** (stable `bun:ffi`, `dlopen`, `FinalizationRegistry`).
 - [ ] All of FR-1..FR-4 complete; API surface verified by a conformance test cross-checked against confluent-kafka-javascript's `.d.ts`.
 - [ ] Integration tests (producer/consumer/admin/transactions/oauthbearer) green on CI against a real broker (Apache Kafka KRaft container) for linux-x64.
 - [ ] In-repo benchmark demonstrating G3, results published in `bench/RESULTS.md`.
-- [ ] `bun add @vnstrawhat/bun-rdkafka` on a clean machine for all 5 Tier-1 targets → the producer + consumer examples run.
-- [ ] Release pipeline: pushing tag `vX.Y.Z` → CI builds 5 binaries, creates a GitHub Release, publishes 6 npm packages, automated and idempotent.
+- [ ] `bun add @vnstrawhat/bun-rdkafka` on a clean machine for both Tier-1 prebuilt targets → the producer + consumer examples run; one source-build-fallback check on a Tier-2 platform.
+- [ ] Release pipeline: one dispatch/tag → CI builds the prebuilt binaries, creates a GitHub Release, publishes the npm package, automated and idempotent.
 - [ ] Documentation: README, API docs (typedoc), MIGRATION.md from confluent-kafka-javascript (~"change the import and you're done" + a table of differences if any).
 
 ## 9. Key risks
