@@ -166,9 +166,11 @@ binary protocol, the PollScheduler, no event-loop blocking, no crashes.
 > fallback; env escape hatches; dev-repo no-op), `prepack`/`postpack` (bundle `native/`
 > + `librdkafka.version` into the tarball), loader resolves `prebuilds/<target>/`, CI
 > matrix targets renamed to platform keys, `release.yml` with two entry points:
-> **workflow_dispatch choosing a bump type (patch/minor/major) → auto version bump +
-> Conventional-Commits changelog (`scripts/changelog.ts`) → commit + tag** → build →
-> GitHub Release (changelog as notes) → npm publish (gated on NPM_TOKEN, idempotent,
+> **workflow_dispatch choosing a bump type (patch/minor/major) → version + changelog
+> preview (no commit) → build → tag & bump ONLY after green builds** (`finalize` commits
+> `chore(release)` + tags + pushes with a one-retry race guard, so a failed build never
+> burns a version; reworked 2026-08-14) → GitHub Release (changelog as notes) →
+> npm publish (gated on NPM_TOKEN, idempotent,
 > release-before-publish ordering); manual `v*` tag pushes also work. Remaining: push
 > to GitHub, verify CI on the prebuilt targets (matrix reduced to 2 on 2026-08-14:
 > linux-x64-gnu, win32-x64 — darwin and linux-arm64 dropped; those platforms fall
@@ -190,7 +192,7 @@ binary protocol, the PollScheduler, no event-loop blocking, no crashes.
 > artifact gets the same gate — currently only build-verified.
 
 - [x] Distribution scripts (`install.ts`/`install-plan.ts`/`prepack.ts`/`postpack.ts`) + loader `prebuilds/` resolution + unit/integration tests (local mirror).
-- [x] `release.yml`: dispatch bump (patch/minor/major) → changelog from Conventional Commits → tag → build → package assets + SHA256SUMS → GitHub Release → npm publish `@vnstrawhat/bun-rdkafka` with provenance, secret-gated, idempotent.
+- [x] `release.yml`: dispatch bump (patch/minor/major) → changelog preview → build → tag/bump only on green builds → package assets + SHA256SUMS → GitHub Release → npm publish `@vnstrawhat/bun-rdkafka` with provenance, secret-gated, idempotent.
 - [ ] Trial release (e.g. `v0.1.0`) end-to-end; clean-machine installs on the 2 prebuilt targets (simulated CI job), including the Bun `trustedDependencies` path, plus one source-build-fallback check (macOS or linux-arm64).
 - **DoD:** pushing one tag completes the entire release chain with no manual intervention.
 

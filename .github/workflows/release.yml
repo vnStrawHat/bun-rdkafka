@@ -2,21 +2,26 @@ name: Release
 
 # M7 pipeline (docs/02-detail-design.md §9–§10). Two entry points:
 #
-#   1. workflow_dispatch with a version-bump choice (patch/minor/major): the
-#      `prepare` job bumps packages/bun-rdkafka/package.json, generates the
-#      CHANGELOG.md section from Conventional Commits (scripts/changelog.ts),
-#      commits, tags v<next>, and pushes. The SAME run then builds and releases
-#      (a tag pushed with GITHUB_TOKEN would not trigger a second run anyway —
-#      GitHub suppresses recursive workflow triggers).
-#   2. Pushing a `v*` tag manually still works (prepare is skipped; the tag's
-#      commit must already carry the matching package.json version).
+#   1. workflow_dispatch with a version-bump choice (patch/minor/major):
+#        plan     — computes the next version + a changelog PREVIEW (no commit, no tag)
+#        build    — reuses ci.yml's full matrix at the current main SHA
+#        finalize — runs ONLY when every build job succeeded: bumps package.json for
+#                   real, regenerates CHANGELOG.md, commits `chore(release): v<next>`,
+#                   tags and pushes. A failed build therefore never burns a version
+#                   number or leaves a dangling tag.
+#        package-and-release / publish-npm — assets + GitHub Release on that tag, then npm.
+#   2. Pushing a `v*` tag manually still works: plan/finalize are skipped; the tag's
+#      commit must already carry the matching package.json version.
 #
-# Ordering matters: the GitHub Release (with binary assets) MUST exist before
-# the npm publish — postinstall of the published version downloads from it.
+# Ordering matters: the GitHub Release (with binary assets) MUST exist before the npm
+# publish — postinstall of the published version downloads from it.
 #
-# Note: the native build reuses ci.yml at the triggering SHA. For dispatch runs
-# that is the pre-bump commit, which is fine — the release commit only touches
-# package.json/CHANGELOG.md, never the native sources.
+# Notes:
+#   - A tag pushed with GITHUB_TOKEN does not trigger other workflows (GitHub suppresses
+#     recursive triggers), so every step must run within this single run — and does.
+#   - The native build runs at the pre-bump SHA. That is fine: the release commit only
+#     touches package.json/CHANGELOG.md, never the native sources.
+#   - `concurrency` serializes release runs so two dispatches cannot race the tag push.
 on:
   push:
     tags:
@@ -29,17 +34,23 @@ on:
         type: choice
         options: [patch, minor, major]
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
 jobs:
-  # Bumps the version, generates the changelog, commits and tags (dispatch only).
-  prepare:
-    name: prepare (${{ inputs.bump }})
+  # Computes the next version and a changelog preview (uploaded as an artifact for
+  # inspection). Deliberately makes NO commit and NO tag: the real bump happens in
+  # `finalize`, after the builds are green.
+  plan:
+    name: plan (${{ inputs.bump }})
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     outputs:
-      tag: ${{ steps.bump.outputs.tag }}
+      version: ${{ steps.compute.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,49 +60,101 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Bump version, generate changelog, commit and tag
-        id: bump
+      - name: Compute next version + changelog preview
+        id: compute
+        run: |
+          set -euo pipefail
+          (cd packages/bun-rdkafka && npm version "${{ inputs.bump }}" --no-git-tag-version)
+          next="$(bun -e 'console.log(JSON.parse(await Bun.file("packages/bun-rdkafka/package.json").text()).version)')"
+          echo "next version (preview): $next"
+          bun scripts/changelog.ts --next "$next" --notes-file release-notes-preview.md
+          git checkout -- . # discard the preview bump; finalize redoes it for real
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Upload changelog preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes-preview
+          path: release-notes-preview.md
+
+  # Reuses ci.yml's entire build-native matrix (+ lint-type, unit) — same run, so the
+  # artifacts uploaded there can be downloaded again below.
+  build:
+    needs: [plan]
+    if: ${{ !failure() && !cancelled() }} # plan is skipped on tag pushes
+    uses: ./.github/workflows/ci.yml
+
+  # Bumps the version and pushes the release commit + tag — ONLY after a fully green
+  # build, and only for dispatch runs.
+  finalize:
+    name: finalize (bump + tag)
+    needs: [plan, build]
+    if: github.event_name == 'workflow_dispatch' && needs.plan.result == 'success' && needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Bump, changelog, commit, tag, push (one retry on race)
+        id: tag
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          (cd packages/bun-rdkafka && npm version "${{ inputs.bump }}" --no-git-tag-version)
-          next="$(bun -e 'console.log(JSON.parse(await Bun.file("packages/bun-rdkafka/package.json").text()).version)')"
-          echo "next version: $next"
+          # NOTE: inside a `fn || fn` list bash disables errexit within the function
+          # body, so every critical command carries an explicit `|| return 1`.
+          attempt() {
+            # Always start from the freshest main so the release commit (and the
+            # regenerated changelog) include anything that landed since checkout.
+            git fetch origin main "refs/tags/*:refs/tags/*" || return 1
+            git reset --hard origin/main || return 1
+            (cd packages/bun-rdkafka && npm version "${{ inputs.bump }}" --no-git-tag-version) || return 1
+            next="$(bun -e 'console.log(JSON.parse(await Bun.file("packages/bun-rdkafka/package.json").text()).version)')" || return 1
+            bun scripts/changelog.ts --next "$next" --notes-file release-notes.md || return 1
+            git add packages/bun-rdkafka/package.json CHANGELOG.md || return 1
+            git commit -m "chore(release): v${next}" || return 1
+            git tag -f "v${next}" || return 1 # -f only replaces a LOCAL leftover from a failed attempt
+            # --atomic: branch + tag land together or not at all.
+            if git push --atomic origin HEAD:main "refs/tags/v${next}"; then
+              echo "tag=v${next}" >> "$GITHUB_OUTPUT"
+              return 0
+            fi
+            return 1
+          }
+          # Race handling: if main moved between fetch and push (non-fast-forward), retry
+          # ONCE from the fresh origin/main — bump + changelog are regenerated, so the
+          # release commit is always based on the latest main. Never force-push.
+          attempt || attempt || {
+            echo "::error::push failed twice (main keeps moving?) — re-run the workflow"
+            exit 1
+          }
 
-          bun scripts/changelog.ts --next "$next" --notes-file release-notes.md
-
-          git add packages/bun-rdkafka/package.json CHANGELOG.md
-          git commit -m "chore(release): v${next}"
-          git tag "v${next}"
-          git push origin HEAD "refs/tags/v${next}"
-          echo "tag=v${next}" >> "$GITHUB_OUTPUT"
-
-      - name: Upload release notes
+      - name: Upload final release notes
         uses: actions/upload-artifact@v4
         with:
           name: release-notes
           path: release-notes.md
 
-  # Reuses ci.yml's entire build-native matrix (+ lint-type, unit) -- runs within the same
-  # workflow run, so the artifacts uploaded here can be downloaded again right below.
-  build:
-    needs: [prepare]
-    if: ${{ !failure() && !cancelled() }} # prepare is skipped on tag pushes
-    uses: ./.github/workflows/ci.yml
-
   package-and-release:
     name: package-and-release
-    needs: [prepare, build]
-    if: ${{ !failure() && !cancelled() }}
+    needs: [build, finalize]
+    if: ${{ !failure() && !cancelled() }} # finalize is skipped on tag pushes
     runs-on: ubuntu-24.04
     env:
-      RELEASE_TAG: ${{ needs.prepare.outputs.tag || github.ref_name }}
+      RELEASE_TAG: ${{ needs.finalize.outputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare.outputs.tag || github.ref_name }}
+          ref: ${{ needs.finalize.outputs.tag || github.ref_name }}
 
       - name: Download all native-* artifacts
         uses: actions/download-artifact@v4
@@ -110,14 +173,14 @@ jobs:
           (cd release-assets && sha256sum -- *.tar.gz > SHA256SUMS)
           ls -la release-assets
 
-      - name: Download generated release notes (dispatch runs)
-        if: needs.prepare.outputs.tag != ''
+      - name: Download final release notes (dispatch runs)
+        if: needs.finalize.outputs.tag != ''
         uses: actions/download-artifact@v4
         with:
           name: release-notes
 
       - name: Create GitHub Release (generated changelog body)
-        if: needs.prepare.outputs.tag != ''
+        if: needs.finalize.outputs.tag != ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
@@ -127,7 +190,7 @@ jobs:
             release-assets/SHA256SUMS
 
       - name: Create GitHub Release (tag push, auto notes)
-        if: needs.prepare.outputs.tag == ''
+        if: needs.finalize.outputs.tag == ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
@@ -143,18 +206,18 @@ jobs:
   # step). Idempotent: re-running a tag skips versions already on the registry.
   publish-npm:
     name: publish-npm
-    needs: [prepare, package-and-release]
+    needs: [finalize, package-and-release]
     if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       id-token: write # for `npm publish --provenance`
     env:
-      RELEASE_TAG: ${{ needs.prepare.outputs.tag || github.ref_name }}
+      RELEASE_TAG: ${{ needs.finalize.outputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare.outputs.tag || github.ref_name }}
+          ref: ${{ needs.finalize.outputs.tag || github.ref_name }}
 
       - uses: oven-sh/setup-bun@v2
         with:
