@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.1.2 (2026-08-15)
+
+### Bug Fixes
+
+- **test:** make loader resolution tests hermetic
+
+### Documentation
+
+- reflect 3-target prebuilt matrix after dropping darwin
+
+### Maintenance
+
+- run TS unit tests before native builds; verify artifacts post-build
+- **native:** implement BRK_STATIC_DEPS for portable linux prebuilts
+- **release:** tag and bump only after successful builds
+- cache native deps, ccache and vcpkg binary archives
+- drop linux-arm64 prebuilt target
+- drop darwin targets from the build matrix
+
+**Full diff:** [v0.1.1...v0.1.2](https://github.com/vnStrawHat/bun-rdkafka/compare/v0.1.1...v0.1.2)
+
 ## v0.1.1 (2026-08-14)
 
 ### Features
