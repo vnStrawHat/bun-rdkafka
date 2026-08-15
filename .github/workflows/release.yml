@@ -252,4 +252,8 @@ jobs:
             echo "::notice::@vnstrawhat/bun-rdkafka@${ver} already published — skipping"
             exit 0
           fi
-          npm publish packages/bun-rdkafka --provenance --access public
+          # NOTE: never pass the folder as a positional arg — npm parses
+          # "packages/bun-rdkafka" as a GitHub owner/repo shorthand and tries to
+          # resolve it over git+ssh. Publish from inside the package dir instead.
+          cd packages/bun-rdkafka
+          npm publish --provenance --access public
