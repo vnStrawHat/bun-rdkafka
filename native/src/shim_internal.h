@@ -42,11 +42,20 @@ typedef pthread_mutex_t brk_mutex_t;
 
 /* A pre-serialized frame (exact EVENT FRAME format 5) waiting to be picked up
  * by brk_events_poll. */
+#ifdef _MSC_VER
+/* C4200: MSVC flags C99/C11 flexible array members as a "nonstandard
+ * extension"; the layout is well-defined and portable, so silence it. */
+#pragma warning(push)
+#pragma warning(disable : 4200)
+#endif
 typedef struct brk_frame {
   struct brk_frame *next;
   int32_t len; /* total bytes including the frame header */
   uint8_t data[];
 } brk_frame;
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 /* Topic name → id intern table (id = index, stable for the handle's
  * lifetime). */
