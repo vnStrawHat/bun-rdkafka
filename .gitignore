@@ -4,6 +4,7 @@ node_modules/
 # native build
 build/
 native/build/
+native/build-*/
 *.o
 *.so
 *.dylib

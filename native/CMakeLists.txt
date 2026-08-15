@@ -60,10 +60,26 @@ else()
   set(WITH_SASL_SCRAM ON)
   set(WITH_SASL_OAUTHBEARER ON)
   if(BRK_STATIC_DEPS)
-    # TODO(M7): build OpenSSL/zlib/zstd/lz4 statically (ExternalProject or a
-    # container with prebuilt .a files) then point OPENSSL_ROOT_DIR/ZLIB_ROOT/...
-    # here. See design §9.2.
-    message(FATAL_ERROR "BRK_STATIC_DEPS is not implemented yet (TODO M7 — CI release)")
+    # CI release configuration: build static OpenSSL/zlib/zstd/lz4 at configure
+    # time (cmake/StaticDeps.cmake) and pin librdkafka's find_package results to
+    # them, so the final libbunrdkafka.so depends on nothing beyond the glibc
+    # family and is portable across glibc distros. Dev builds keep this OFF and
+    # link the system -devel packages (faster).
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/StaticDeps.cmake")
+    # OpenSSL: FindOpenSSL honors these.
+    set(OPENSSL_ROOT_DIR "${BRK_DEPS_PREFIX}" CACHE PATH "" FORCE)
+    set(OPENSSL_USE_STATIC_LIBS TRUE)
+    # zlib: presetting ZLIB_LIBRARY/ZLIB_INCLUDE_DIR short-circuits FindZLIB.
+    set(ZLIB_ROOT "${BRK_DEPS_PREFIX}" CACHE PATH "" FORCE)
+    set(ZLIB_INCLUDE_DIR "${BRK_DEPS_PREFIX}/include" CACHE PATH "" FORCE)
+    set(ZLIB_LIBRARY "${BRK_DEPS_PREFIX}/lib/libz.a" CACHE FILEPATH "" FORCE)
+    # zstd/lz4: librdkafka's FindZSTD/FindLZ4 use these exact cache variables;
+    # presetting them skips the find_path/find_library system search entirely.
+    set(ZSTD_INCLUDE_DIR "${BRK_DEPS_PREFIX}/include" CACHE PATH "" FORCE)
+    set(ZSTD_LIBRARY_RELEASE "${BRK_DEPS_PREFIX}/lib/libzstd.a" CACHE FILEPATH "" FORCE)
+    set(ZSTD_LIBRARY "${BRK_DEPS_PREFIX}/lib/libzstd.a" CACHE FILEPATH "" FORCE)
+    set(LZ4_INCLUDE_DIR "${BRK_DEPS_PREFIX}/include" CACHE PATH "" FORCE)
+    set(LZ4_LIBRARY "${BRK_DEPS_PREFIX}/lib/liblz4.a" CACHE FILEPATH "" FORCE)
   endif()
 
   FetchContent_Declare(
@@ -100,6 +116,11 @@ if(MSVC)
 else()
   target_compile_options(bunrdkafka PRIVATE -O2 -Wall -Wextra)
   target_link_libraries(bunrdkafka PRIVATE pthread m)
+  if(BRK_STATIC_DEPS)
+    # Static libcrypto.a references dlopen/dlsym (providers) — resolve them at
+    # the shared-lib link instead of leaving undefined symbols.
+    target_link_libraries(bunrdkafka PRIVATE ${CMAKE_DL_LIBS})
+  endif()
 endif()
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE)
   # Do not leak static librdkafka/openssl symbols into the dynamic table
