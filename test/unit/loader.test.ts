@@ -3,7 +3,11 @@
  * run before the native library is built).
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { suffix } from "bun:ffi";
 import {
   SUPPORTED_PLATFORM_KEYS,
   isNativeLoaded,
@@ -19,6 +23,39 @@ const original = process.env[ENV_KEY];
 afterEach(() => {
   if (original === undefined) delete process.env[ENV_KEY];
   else process.env[ENV_KEY] = original;
+});
+
+/**
+ * Hermetic fixture: a fake package root in a tmpdir. `resolveLibPath(fromDir)`
+ * treats `fromDir` as `<pkg>/src/ffi`, looks for `<pkg>/prebuilds/<key>/` and
+ * then walks up for a dev-local `native/build/`. Never depends on the state of
+ * the real repo (CI has neither a dev build nor prebuilds).
+ */
+function makeFixtureRoot(opts: { prebuilds?: boolean; devBuild?: boolean }): {
+  root: string;
+  fromDir: string;
+} {
+  const root = mkdtempSync(join(tmpdir(), "brk-loader-"));
+  fixtureRoots.push(root);
+  const fromDir = join(root, "src", "ffi");
+  mkdirSync(fromDir, { recursive: true });
+  const libName = `libbunrdkafka.${suffix}`;
+  if (opts.prebuilds) {
+    const dir = join(root, "prebuilds", platformKey());
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, libName), "not a real library");
+  }
+  if (opts.devBuild) {
+    const dir = join(root, "native", "build");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, libName), "not a real library");
+  }
+  return { root, fromDir };
+}
+
+const fixtureRoots: string[] = [];
+afterAll(() => {
+  for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true });
 });
 
 describe("lazy load", () => {
@@ -59,10 +96,19 @@ describe("resolution order", () => {
 
   test("without the env var, prebuilds/ is tried before the dev-local native/build", () => {
     delete process.env[ENV_KEY];
-    // In the repo prebuilds/ is normally absent, so it falls back to the dev build.
-    const resolved = resolveLibPath();
-    expect(resolved).toMatch(/(prebuilds[\\/]|native[\\/]build[\\/])/);
-    expect(resolved).toMatch(/bunrdkafka\./);
+    // Both present → prebuilds/ wins (the installer's output beats the dev build).
+    const both = makeFixtureRoot({ prebuilds: true, devBuild: true });
+    expect(resolveLibPath(both.fromDir)).toBe(
+      join(both.root, "prebuilds", platformKey(), `libbunrdkafka.${suffix}`),
+    );
+  });
+
+  test("without prebuilds/, falls back to the dev-local native/build", () => {
+    delete process.env[ENV_KEY];
+    const devOnly = makeFixtureRoot({ devBuild: true });
+    expect(resolveLibPath(devOnly.fromDir)).toBe(
+      join(devOnly.root, "native", "build", `libbunrdkafka.${suffix}`),
+    );
   });
 
   test("nothing found → an error with remediation guidance", () => {
