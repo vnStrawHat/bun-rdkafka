@@ -1,12 +1,16 @@
 name: CI
 
-# build-native (2 prebuilt targets: linux-x64-gnu, win32-x64) + lint-type + unit.
+# Job order (cheap gates first, per user decision 2026-08-15):
+#   lint-type + unit (pure TS, no native binary)  →  build-native (2 prebuilt
+#   targets: linux-x64-gnu, win32-x64)  →  verify-native (dlopen + ldd gate on
+#   the artifact, on a DIFFERENT distro than the builder).
 # darwin and linux-arm64 were dropped from the prebuilt matrix on 2026-08-14 — those
 # platforms use the installer's source-build fallback instead (scripts/install.ts).
 # integration/bench-smoke jobs (docs/02-detail-design.md §10.1) come in a later milestone.
 #
-# `workflow_call` lets release.yml (tag v*) reuse this workflow's entire build-native matrix
-# instead of duplicating the job definition.
+# `workflow_call` lets release.yml (tag v*) reuse this workflow's entire job chain
+# instead of duplicating the definitions — a release only proceeds when verify-native
+# passed too.
 on:
   push:
     branches:
@@ -30,6 +34,7 @@ jobs:
   # ---------------------------------------------------------------------------------------
   build-native:
     name: build-native (${{ matrix.target }})
+    needs: [lint-type, unit]
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
     defaults:
@@ -53,12 +58,14 @@ jobs:
       - name: Install toolchain (AlmaLinux 8 container)
         if: matrix.container == 'almalinux:8'
         run: |
-          # libzstd-devel / lz4-devel live in the PowerTools (CRB) repo on EL8 — enable it
-          # first. librdkafka's CMake hard-requires zstd headers (WITH_ZSTD=ON) and prefers
-          # an external lz4 (ENABLE_LZ4_EXT=ON). cyrus-sasl-devel is deliberately NOT
-          # installed: the prebuilt would pick up a dynamic libsasl2.so.3 dependency whose
-          # soname differs across distros (Debian ships .so.2), breaking dlopen on user
-          # machines; the builtin SASL PLAIN/SCRAM/OAUTHBEARER mechanisms don't need it.
+          # No -devel packages for openssl/zlib/zstd/lz4: the CI release build uses
+          # BRK_STATIC_DEPS=ON, which builds all four statically at configure time
+          # (native/cmake/StaticDeps.cmake) so the prebuilt depends only on the glibc
+          # family — enforced by the ldd gate in verify-native. Leaving the system
+          # -devel packages out makes any accidental system linkage fail loudly here.
+          # cyrus-sasl-devel stays out too (see native/CMakeLists.txt — builtin
+          # PLAIN/SCRAM/OAUTHBEARER don't need it; sonames differ across distros).
+          # perl: required by OpenSSL's ./config.
           dnf install -y dnf-plugins-core
           dnf config-manager --set-enabled powertools
           # epel-release: only for ccache (compiler cache — see the cache steps below).
@@ -70,14 +77,11 @@ jobs:
             cmake \
             make \
             git-core \
+            perl \
             perl-IPC-Cmd \
             which \
             tar \
-            gzip \
-            openssl-devel \
-            zlib-devel \
-            libzstd-devel \
-            lz4-devel
+            gzip
           echo "PATH=/opt/rh/${GCC_TOOLSET}/root/usr/bin:$PATH" >> "$GITHUB_ENV"
           echo "CC=/opt/rh/${GCC_TOOLSET}/root/usr/bin/gcc" >> "$GITHUB_ENV"
           echo "CXX=/opt/rh/${GCC_TOOLSET}/root/usr/bin/g++" >> "$GITHUB_ENV"
@@ -114,7 +118,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/_deps
-          key: fetchcontent-${{ matrix.target }}-${{ hashFiles('librdkafka.version', 'native/CMakeLists.txt') }}
+          key: fetchcontent-${{ matrix.target }}-${{ hashFiles('librdkafka.version', 'native/CMakeLists.txt', 'native/cmake/StaticDeps.cmake') }}
           restore-keys: |
             fetchcontent-${{ matrix.target }}-
 
@@ -139,7 +143,10 @@ jobs:
               -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
               -DVCPKG_TARGET_TRIPLET=x64-windows-static-md
           else
+            # BRK_STATIC_DEPS: static OpenSSL/zlib/zstd/lz4 for a portable prebuilt
+            # (the deps live under build/_deps → covered by the FetchContent cache).
             cmake -B build -S native -DCMAKE_BUILD_TYPE=Release \
+              -DBRK_STATIC_DEPS=ON \
               -DCMAKE_C_COMPILER_LAUNCHER=ccache \
               -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           fi
@@ -196,18 +203,48 @@ jobs:
         run: bunx tsc --noEmit
 
   # ---------------------------------------------------------------------------------------
-  # unit: bun test test/unit on ubuntu, using the binary from build-native
+  # unit: pure-TS tests (unit + conformance) — runs BEFORE any native build as a cheap
+  # gate. No artifact, no BUN_RDKAFKA_LIB_PATH: native-dependent tests skip cleanly
+  # when no library is present (they are exercised against the real artifact in
+  # verify-native below).
   # ---------------------------------------------------------------------------------------
   unit:
-    name: unit (${{ matrix.os }})
+    name: unit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache bun install cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
+      - run: bun install
+
+      - name: bun test (unit + conformance, no native)
+        run: bun test test/unit test/conformance
+
+  # ---------------------------------------------------------------------------------------
+  # verify-native: portability gate on the built artifact. Runs on ubuntu-24.04 — a
+  # DIFFERENT distro than the AlmaLinux 8 builder — so a prebuilt that secretly
+  # depends on the builder's system libraries (the OpenSSL 1.1 incident) fails here
+  # instead of on user machines:
+  #   1. ldd must show nothing beyond the glibc family (BRK_STATIC_DEPS contract);
+  #   2. the library must dlopen and report all required librdkafka builtin.features
+  #      (test/unit/native-features.test.ts fails loudly when BUN_RDKAFKA_LIB_PATH is set).
+  # TODO (plan M7): a Windows verify job needs bun-on-windows — tracked separately.
+  # ---------------------------------------------------------------------------------------
+  verify-native:
+    name: verify-native (linux-x64-gnu)
     needs: build-native
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            native_target: linux-x64-gnu
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -228,17 +265,19 @@ jobs:
       - name: Download native artifact
         uses: actions/download-artifact@v4
         with:
-          name: native-${{ matrix.native_target }}
+          name: native-linux-x64-gnu
           path: native-lib
 
-      - name: Export BUN_RDKAFKA_LIB_PATH
+      - name: ldd gate — glibc family only
         run: |
-          LIB_FILE="$(find native-lib -type f \( -name '*.so' -o -name '*.dylib' -o -name '*.dll' \) | head -n1)"
-          if [ -z "$LIB_FILE" ]; then
-            echo "::error::no native library found in the downloaded artifact"
+          LIB_FILE="$(find native-lib -type f -name '*.so' | head -n1)"
+          test -n "$LIB_FILE" || (echo "::error::no .so in the artifact" && exit 1)
+          echo "BUN_RDKAFKA_LIB_PATH=$(cd "$(dirname "$LIB_FILE")" && pwd)/$(basename "$LIB_FILE")" >> "$GITHUB_ENV"
+          ldd "$LIB_FILE"
+          if ldd "$LIB_FILE" | grep -E 'libssl|libcrypto|libzstd|liblz4|libz\.|libsasl'; then
+            echo "::error::prebuilt dynamically links a non-glibc dependency (must be static — BRK_STATIC_DEPS)"
             exit 1
           fi
-          echo "BUN_RDKAFKA_LIB_PATH=$(cd "$(dirname "$LIB_FILE")" && pwd)/$(basename "$LIB_FILE")" >> "$GITHUB_ENV"
 
-      - name: bun test test/unit
-        run: bun test test/unit
+      - name: dlopen + builtin.features against the artifact
+        run: bun test test/unit/native-features.test.ts
