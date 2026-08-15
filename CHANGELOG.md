@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.1.3 (2026-08-15)
+
+### Bug Fixes
+
+- **release:** publish from inside the package dir to avoid npm git-shorthand parsing
+- **native:** silence MSVC C4200 for the flexible array member in brk_frame
+
+### Maintenance
+
+- **native:** treat librdkafka headers as SYSTEM to silence upstream header warnings
+
+**Full diff:** [v0.1.2...v0.1.3](https://github.com/vnStrawHat/bun-rdkafka/compare/v0.1.2...v0.1.3)
+
 ## v0.1.2 (2026-08-15)
 
 ### Bug Fixes
