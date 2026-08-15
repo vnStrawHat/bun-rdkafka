@@ -107,8 +107,10 @@ set_target_properties(bunrdkafka PROPERTIES PREFIX "lib" OUTPUT_NAME "bunrdkafka
 target_include_directories(bunrdkafka PRIVATE include)
 target_link_libraries(bunrdkafka PRIVATE ${BRK_RDKAFKA_LIB})
 if(NOT (WIN32 OR BRK_USE_SYSTEM_RDKAFKA))
-  # FetchContent: the header lives inside librdkafka's source tree
-  target_include_directories(bunrdkafka PRIVATE ${librdkafka_SOURCE_DIR}/src)
+  # FetchContent: the header lives inside librdkafka's source tree. SYSTEM keeps
+  # upstream header warts (e.g. `const int` returns → -Wignored-qualifiers) from
+  # polluting our warning output while our own code stays at full strictness.
+  target_include_directories(bunrdkafka SYSTEM PRIVATE ${librdkafka_SOURCE_DIR}/src)
 endif()
 
 if(MSVC)
