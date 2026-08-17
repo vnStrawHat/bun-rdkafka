@@ -693,3 +693,113 @@ describe("normalizeHeaders", () => {
     expect(normalizeHeaders([])).toBeUndefined();
   });
 });
+
+/* ========================================================================== */
+/* partitioner_cb (JS-side)                                                    */
+/* ========================================================================== */
+
+describe("partitioner_cb", () => {
+  /** brk_metadata fake returning `topics` (each with `partitions` partitions). */
+  function metadataWith(topics: Record<string, number>): AnyFn {
+    return (_h: unknown, _t: unknown, _timeout: unknown, out: BigUint64Array) => {
+      const json = JSON.stringify({
+        orig_broker_id: 1,
+        orig_broker_name: "localhost:9092/1",
+        brokers: [{ id: 1, host: "localhost", port: 9092 }],
+        topics: Object.entries(topics).map(([name, n]) => ({
+          name,
+          partitions: Array.from({ length: n }, (_v, id) => ({ id, leader: 1, replicas: [1], isrs: [1] })),
+        })),
+      });
+      const buf = new TextEncoder().encode(`${json}\0`);
+      metaKeepAlive.push(buf);
+      out[0] = BigInt(ptr(buf));
+      return buf.length - 1;
+    };
+  }
+
+  test("called with (topic, key, partitionCount) for partition null/-1; result lands in the batch", async () => {
+    const calls: [string, unknown, number][] = [];
+    const { producer, fake } = makeProducer(
+      {
+        partitioner_cb: (topic: string, key: unknown, count: number) => {
+          calls.push([topic, key, count]);
+          return 2;
+        },
+      },
+      { brk_metadata: metadataWith({ orders: 4 }) },
+    );
+    await connect(producer);
+    producer.produce("orders", null, "v", "k");
+    producer.produce("orders", -1, "v", Buffer.from("kb"));
+    producer.produce("orders", undefined, "v", null);
+    producer.produce("orders", 1, "v", "explicit"); // explicit partition → partitioner NOT consulted
+    await flushTick();
+    expect(fake.batches[0]!.map((r) => r.partition)).toEqual([2, 2, 2, 1]);
+    expect(calls).toHaveLength(3);
+    expect(calls[0]).toEqual(["orders", "k", 4]);
+    expect(Buffer.isBuffer(calls[1]![1])).toBe(true);
+    expect((calls[1]![1] as Buffer).toString()).toBe("kb");
+    expect(calls[2]![1]).toBeNull();
+    await disconnect(producer);
+  });
+
+  test("out-of-range / non-integer results fall back to librdkafka's partitioner (-1)", async () => {
+    let ret: unknown = 7;
+    const { producer, fake } = makeProducer(
+      { partitioner_cb: () => ret as number },
+      { brk_metadata: metadataWith({ t: 3 }) },
+    );
+    await connect(producer);
+    producer.produce("t", null, "a");
+    ret = 1.5;
+    producer.produce("t", null, "b");
+    ret = 0;
+    producer.produce("t", null, "c");
+    await flushTick();
+    expect(fake.batches[0]!.map((r) => r.partition)).toEqual([-1, -1, 0]);
+    await disconnect(producer);
+  });
+
+  test("unknown topic: first produce falls back to -1 and triggers ONE lazy metadata fetch; later produces use the cb", async () => {
+    let known = false;
+    let calls = 0;
+    const meta = metadataWith({ late: 2 });
+    const { producer, fake } = makeProducer(
+      { partitioner_cb: () => { calls++; return 1; } },
+      {
+        brk_metadata: (...args: unknown[]) => {
+          if (known) return meta(...args);
+          // Connect-time metadata: no topics at all.
+          return metadataWith({})(...args);
+        },
+      },
+    );
+    await connect(producer);
+    known = true;
+    const before = fake.calls.filter((c) => c === "brk_metadata").length;
+    producer.produce("late", null, "a");
+    producer.produce("late", null, "b");
+    await flushTick();
+    expect(fake.batches[0]!.map((r) => r.partition)).toEqual([-1, -1]);
+    expect(calls).toBe(0);
+    // Exactly one metadata refresh for the topic, on the cold path.
+    const after = fake.calls.filter((c) => c === "brk_metadata").length;
+    expect(after - before).toBe(1);
+    await sleep(2);
+    producer.produce("late", null, "c");
+    await flushTick();
+    expect(fake.batches[1]!.map((r) => r.partition)).toEqual([1]);
+    expect(calls).toBe(1);
+    await disconnect(producer);
+  });
+
+  test("without partitioner_cb the partition passes through untouched", async () => {
+    const { producer, fake } = makeProducer({}, { brk_metadata: metadataWith({ t: 3 }) });
+    await connect(producer);
+    producer.produce("t", null, "a");
+    await flushTick();
+    expect(fake.batches[0]![0]!.partition).toBe(-1);
+    await disconnect(producer);
+  });
+});

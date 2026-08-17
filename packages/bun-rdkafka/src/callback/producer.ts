@@ -20,6 +20,16 @@
  *    → emit `delivery-report`. Backpressure via `js.producer.max.pending`
  *    (defaults to `queue.buffering.max.messages`) — beyond the threshold,
  *    `produce()` throws `ERR__QUEUE_FULL` immediately (synchronously).
+ *  - **`partitioner_cb`** runs on the JS side (no C→JS callback): with a
+ *    function configured, `produce()` with partition `null`/`-1` calls
+ *    `partitioner_cb(topic, key, partitionCount)` and sends the message to the
+ *    returned partition. `partitionCount` comes from a per-topic cache seeded
+ *    by the connect metadata and refreshed lazily via `getMetadata({topic})`
+ *    (TTL {@link PARTITION_COUNT_TTL_MS}, and on `ERR__UNKNOWN_PARTITION`
+ *    delivery errors). While a topic's count is unknown (first produce to a
+ *    topic absent from the connect metadata) the message falls back to
+ *    librdkafka's default partitioner so `produce()` stays synchronous and
+ *    non-blocking; the refresh runs on the cold path.
  */
 
 import { BRK_CLIENT_PRODUCER, BRK_EVENT_DR, RD_KAFKA_PARTITION_UA } from "../ffi/types.ts";
@@ -32,6 +42,7 @@ import {
   Client,
   type ClientInternalOptions,
   type DisconnectCallback,
+  type Metadata,
 } from "./client.ts";
 
 /* ========================================================================== */
@@ -68,6 +79,19 @@ export type DeliveryReportListener = (
 export type TransactionCallback = (err: LibrdKafkaError | null) => void;
 export type FlushCallback = (err: LibrdKafkaError | null) => void;
 
+/**
+ * `partitioner_cb(topic, key, partitionCount)` → partition index (upstream
+ * signature). `key` is the message key as passed to `produce()` (`string`,
+ * `Buffer` view, or `null`). Returning something outside `[0, partitionCount)`
+ * falls back to librdkafka's default partitioner (like upstream returning an
+ * unavailable partition).
+ */
+export type PartitionerCallback = (
+  topic: string,
+  key: string | Buffer | null,
+  partitionCount: number,
+) => number;
+
 /** Input offsets of `sendOffsetsToTransaction` — upstream shape. */
 export interface TopicPartitionOffset {
   topic: string;
@@ -102,6 +126,20 @@ const TXN_STEP_MS = 100;
 const DEFAULT_TXN_TIMEOUT_MS = 30_000;
 const FLUSH_POLL_STEP_MS = 5;
 const DEFAULT_FLUSH_TIMEOUT_MS = 10_000;
+
+/** How long a cached partition count is trusted before a background refresh. */
+export const PARTITION_COUNT_TTL_MS = 5 * 60_000;
+/** Minimum spacing between metadata refreshes for a topic whose count is still unknown. */
+const PARTITION_COUNT_RETRY_MS = 1_000;
+/** Timeout of the lazy `getMetadata({topic})` used to learn a partition count. */
+const PARTITION_COUNT_METADATA_TIMEOUT_MS = 5_000;
+
+/** Per-topic partition count for the JS-side partitioner. `count` 0 = unknown. */
+interface PartitionCountEntry {
+  count: number;
+  /** After this epoch-ms the entry is refreshed on the next produce (still used meanwhile). */
+  refreshAt: number;
+}
 
 /** Metadata of a record awaiting its DR (the {@link DeliveryLedger}'s record `R`). */
 interface StagedMeta {
@@ -167,6 +205,10 @@ export class Producer extends Client {
   private readonly includeValueInReport: boolean;
   private pollIntervalMs = 0;
   private pollIntervalTimer: ReturnType<typeof setInterval> | undefined;
+  /** JS-side `partitioner_cb` (undefined = librdkafka's partitioner). */
+  private readonly partitioner: PartitionerCallback | undefined;
+  private readonly partitionCounts = new Map<string, PartitionCountEntry>();
+  private readonly partitionCountInFlight = new Set<string>();
 
   constructor(
     globalConf?: ClientConfig,
@@ -187,7 +229,14 @@ export class Producer extends Client {
       this.on("delivery-report", dr_msg_cb as DeliveryReportListener);
     }
 
-    this.on("ready", () => this.applyPollInterval());
+    const { partitioner_cb } = this.configCallbacks;
+    this.partitioner =
+      typeof partitioner_cb === "function" ? (partitioner_cb as PartitionerCallback) : undefined;
+
+    this.on("ready", (_info: unknown, metadata: Metadata) => {
+      this.applyPollInterval();
+      if (this.partitioner !== undefined) this.seedPartitionCounts(metadata);
+    });
   }
 
   /* -------------------------------------------------------------- produce */
@@ -245,6 +294,11 @@ export class Producer extends Client {
 
     const value = toBytes(message);
     const keyBytes = toBytes(key);
+    // JS-side partitioner: only when the caller left the choice open (null/-1).
+    let chosenPartition = partition ?? RD_KAFKA_PARTITION_UA;
+    if (this.partitioner !== undefined && chosenPartition < 0) {
+      chosenPartition = this.choosePartition(topic, keyBytes);
+    }
     const meta: StagedMeta = {
       topic,
       key: keyBytes,
@@ -264,7 +318,7 @@ export class Producer extends Client {
 
     const record: ProduceRecord = {
       topic,
-      partition: partition ?? RD_KAFKA_PARTITION_UA,
+      partition: chosenPartition,
       timestamp: timestamp ?? 0,
       opaqueId,
       key: keyBytes,
@@ -350,6 +404,10 @@ export class Producer extends Client {
   }
 
   private handleDeliveryFailed(error: LibrdKafkaError, meta: StagedMeta): void {
+    // A stale partition count (topic re-created / partitions removed) → forget it.
+    if (this.partitioner !== undefined && error.code === ERROR_CODES.ERR__UNKNOWN_PARTITION) {
+      this.partitionCounts.delete(meta.topic);
+    }
     const report = this.buildReport(meta, RD_KAFKA_PARTITION_UA, -1, -1);
     meta.onDelivery?.(error, report);
     if (this.emitDeliveryReports) this.emit("delivery-report", error, report);
@@ -372,6 +430,55 @@ export class Producer extends Client {
     };
     if (this.includeValueInReport) report.value = meta.value;
     return report;
+  }
+
+  /* ---------------------------------------------------- JS-side partitioner */
+
+  /**
+   * Runs `partitioner_cb` with the cached partition count. Unknown/stale
+   * count → (re)fetch on the cold path; unknown → `RD_KAFKA_PARTITION_UA`
+   * (librdkafka's default partitioner) so `produce()` never blocks.
+   */
+  private choosePartition(topic: string, key: Uint8Array | string | null): number {
+    const now = Date.now();
+    const entry = this.partitionCounts.get(topic);
+    if (entry === undefined || now >= entry.refreshAt) this.refreshPartitionCount(topic, now);
+    if (entry === undefined || entry.count <= 0) return RD_KAFKA_PARTITION_UA;
+    const partitioner = this.partitioner as PartitionerCallback;
+    const keyArg =
+      key === null || typeof key === "string"
+        ? key
+        : Buffer.from(key.buffer, key.byteOffset, key.byteLength);
+    const chosen = partitioner(topic, keyArg, entry.count);
+    if (typeof chosen !== "number" || !Number.isInteger(chosen)) return RD_KAFKA_PARTITION_UA;
+    return chosen >= 0 && chosen < entry.count ? chosen : RD_KAFKA_PARTITION_UA;
+  }
+
+  /** Cold path: `getMetadata({topic})` → cache the partition count (one in flight per topic). */
+  private refreshPartitionCount(topic: string, now: number): void {
+    if (this.partitionCountInFlight.has(topic)) return;
+    this.partitionCountInFlight.add(topic);
+    const prev = this.partitionCounts.get(topic);
+    // Rate-limit retries while the topic stays unknown; keep serving the old count meanwhile.
+    this.partitionCounts.set(topic, {
+      count: prev?.count ?? 0,
+      refreshAt: now + PARTITION_COUNT_RETRY_MS,
+    });
+    this.getMetadata({ topic, timeout: PARTITION_COUNT_METADATA_TIMEOUT_MS }, (err, metadata) => {
+      this.partitionCountInFlight.delete(topic);
+      if (err !== null || metadata === undefined) return;
+      this.seedPartitionCounts(metadata);
+    });
+  }
+
+  /** Records the partition count of every topic present in `metadata`. */
+  private seedPartitionCounts(metadata: Metadata | undefined): void {
+    if (metadata === undefined || !Array.isArray(metadata.topics)) return;
+    const refreshAt = Date.now() + PARTITION_COUNT_TTL_MS;
+    for (const topic of metadata.topics) {
+      const count = Array.isArray(topic.partitions) ? topic.partitions.length : 0;
+      if (count > 0) this.partitionCounts.set(topic.name, { count, refreshAt });
+    }
   }
 
   /* --------------------------------------------------------- poll / flush */

@@ -100,6 +100,8 @@ export {
   type DeliveryReportListener,
   type DeliveryReportPayload,
   type FlushCallback,
+  PARTITION_COUNT_TTL_MS,
+  type PartitionerCallback,
   type ProduceHeaders,
   type ProduceValue,
   type TransactionCallback,
