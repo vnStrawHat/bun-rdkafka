@@ -151,8 +151,8 @@ binary protocol, the PollScheduler, no event-loop blocking, no crashes.
 > per-topic HLP serializers, KafkaJS Consumer logger/dependentAdmin/storeOffsets/committed.
 
 - [ ] The full bench suite (design §12) + confluent-kafka-javascript baseline (Node & Bun).
-- [ ] Profile-driven optimization: batch/buffer sizes, reduced allocation in the decoder (reuse header objects, lazy key/value), scheduler tuning; consider enabling Worker-poll mode if needed for G3.
-- [ ] Opt-in zero-copy mode + documentation.
+- [x] Profile-driven optimization (2026-08-17): fresh buffer per consume batch with message views (no per-message copy), BigInt-free i64 decode, `Buffer.copyBytesFrom`, O(1) FIFO, `setImmediate` instead of `setTimeout(0)` in the HOT loop, 1 ms idle hold, C-side direct serialize + topic-id cache — see `bench/RESULTS.md` "Consume path optimizations".
+- [ ] Opt-in zero-copy mode + documentation (little left to gain after the per-batch buffers; still reserved).
 - [ ] Nightly 30' soak test, ASan/UBSan job, decoder fuzzing with mutated fixtures.
 - [ ] bench-smoke regression guard on CI.
 - **DoD:** G3 met and recorded in `bench/RESULTS.md`; soak shows no leaks.

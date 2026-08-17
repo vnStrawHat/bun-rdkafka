@@ -98,3 +98,14 @@ thread". Summary (3-run medians, same box/broker as the M6 sessions):
 
 Matches the predicted ceiling (~1.3–1.4×). Kept opt-in; see the verdict in
 RESULTS.md for what is missing before it could become the default.
+
+## Follow-up (2026-08-17, later): the JS thread stopped being the bottleneck
+
+The consume-path pass in `bench/RESULTS.md` "Consume path optimizations"
+(setImmediate instead of setTimeout(0) in the HOT loop, fresh buffer per batch
+with message views, BigInt-free decode, O(1) FIFO, C-side direct serialize)
+lifted the default path to 1.59 M msg/s (100 B) / 1.05 M msg/s (1 KiB). With the
+JS thread at ~15 % decode/emit and the rest inside librdkafka's fetch, the
+prefetch thread now buys +6 % at 100 B and nothing at 1 KiB for +20 % CPU. It
+remains an opt-in experiment; the scenario where it still helps is a process
+whose JS thread is busy with other work.

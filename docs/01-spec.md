@@ -162,4 +162,4 @@ Status walked 2026-08-17 (v0.2.1):
 | Building static librdkafka + OpenSSL on Windows/MSVC is complex | Schedule slip | Use vcpkg for Windows; librdkafka has an official vcpkg port |
 | confluent-kafka-javascript's API surface is wide; behavioral details are hard to match 100% | Compatibility | Prioritize by real-world usage; conformance test generated from upstream `.d.ts`; document differences explicitly |
 | Bun changes `bun:ffi` | Stability | Pin a minimum Bun version; CI runs on both Bun stable and canary |
-| Buffer reuse on the consume path causes aliasing if the user keeps references | Correctness | Safe copy-per-message by default; opt-in zero-copy mode with documented warnings (design §7.3) |
+| Buffer reuse on the consume path causes aliasing if the user keeps references | Correctness | Consume buffers are never reused once messages point into them (fresh buffer per batch, ADR-6); stricter zero-copy stays opt-in/reserved |

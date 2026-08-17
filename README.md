@@ -193,24 +193,24 @@ All six snippets above were verified against a real broker before being committe
 
 ## Performance
 
-Measured against `@confluentinc/kafka-javascript` 1.10.0 on Node 24 (same machine, same broker, identical librdkafka 2.15.0 configuration; all seven cases from one benchmarking session on the current code, 3-run medians — full method and raw data in [`bench/RESULTS.md`](./bench/RESULTS.md), section "Consumer prefetch thread", which is the latest full session):
+Measured against `@confluentinc/kafka-javascript` 1.10.0 on Node 24 (same machine, same broker, identical librdkafka 2.15.0 configuration; all seven cases from one benchmarking session on the current code, 3-run medians — full method and raw data in [`bench/RESULTS.md`](./bench/RESULTS.md), section "Consume path optimizations", which is the latest full session):
 
 | Case | bun-rdkafka / Bun | upstream / Node 24 | Ratio |
 |---|---:|---:|---:|
-| producer, 100 B, acks=1 | 1,084,103 msg/s | 743,556 | **1.46×** |
-| producer, 100 B, acks=all | 1,028,990 msg/s | 727,555 | **1.41×** |
-| producer, 1 KB, acks=1 | 592,906 msg/s | 590,276 | 1.00× |
-| producer, 1 KB, acks=all | 648,041 msg/s | 660,349 | 0.98× |
-| consumer, 100 B | 997,499 msg/s (1,256,128 with `js.consume.prefetch`) | 411,091 | **2.43×** (3.06×) |
-| consumer, 1 KB | 677,664 msg/s (863,998 with `js.consume.prefetch`) | 278,685 | **2.43×** (3.10×) |
-| e2e latency p50/p99 @10k msg/s | 4 / 6 ms | 2 / 3 ms | — |
+| producer, 100 B, acks=1 | 906,242 msg/s | 713,628 | **1.27×** |
+| producer, 100 B, acks=all | 934,675 msg/s | 703,847 | **1.33×** |
+| producer, 1 KB, acks=1 | 468,174 msg/s | 578,442 | 0.81× |
+| producer, 1 KB, acks=all | 595,660 msg/s | 572,919 | 1.04× |
+| consumer, 100 B | **1,588,927 msg/s** (1,689,034 with `js.consume.prefetch`) | 396,047 | **4.01×** (4.26×) |
+| consumer, 1 KB | **1,045,989 msg/s** (850,449 with `js.consume.prefetch`) | 223,684 | **4.68×** (3.80×) |
+| e2e latency p50/p99 @10k msg/s | 2 / 4 ms | 2 / 3 ms | — |
 
 Honest caveats:
 
 - Benchmarked on a 4-vCPU / 3 GB box with the broker co-located, so absolute numbers are compressed; ratios are the meaningful signal.
 - The 1 KB producer case is an *unbounded-burst microbenchmark* with high session-to-session variance on this box: earlier sessions measured 0.63–0.81× (see `bench/RESULTS.md` §M6d for the analysis), the latest session — on a freshly recreated broker with topics deleted between cases — measures parity. Treat it as "roughly on par", not as a win.
-- `js.consume.prefetch` (experimental, opt-in) buys the extra consumer throughput with a second thread — +26–33 % throughput for +33–40 % CPU; see the [configuration table](#configuration-js-options).
-- Latency p99 is single-digit ms but roughly 2× upstream — the inherent cost of the poll-based event model. Tune `js.poll.idle.max.ms` down if latency matters more than idle CPU.
+- `js.consume.prefetch` (experimental, opt-in) moves batch serialization to a second thread. After the 2026-08-17 consume-path optimizations the JS thread is no longer the bottleneck on this box, so it now buys little (+6 % at 100 B, none at 1 KB) for +20 % CPU; it remains useful only when the JS thread is busy with other work.
+- Latency p50 matches upstream (2 ms); p99 is 4 ms vs 3 ms — the residual cost of the poll-based event model (1 ms timer granularity). Tune `js.poll.idle.max.ms` down if latency on a *quiet* consumer matters more than idle CPU.
 
 ## Platform support
 
@@ -247,15 +247,15 @@ parameters.
 
 | Key | Default | What it does | Recommended |
 |---|---|---|---|
-| `js.poll.idle.max.ms` | `50` | Ceiling of the adaptive poll backoff when a client is idle. When there is data the client polls continuously; when data runs out it backs off 1 → 2 → 4 … up to this value. It is therefore the **worst-case added latency** for a message arriving on an idle consumer, and for rebalance / offset-commit / delivery-report delivery. | Keep `50` for throughput-oriented workloads. Set `5`–`10` for latency-sensitive consumers (costs a little idle CPU). |
+| `js.poll.idle.max.ms` | `50` | Ceiling of the adaptive poll backoff when a client is idle. When there is data the client polls continuously; when data runs out it keeps polling every 1 ms for 100 ms (steady traffic stays at timer granularity), then backs off 1 → 2 → 4 … up to this value. It is therefore the **worst-case added latency** for a message arriving on an idle consumer, and for rebalance / offset-commit / delivery-report delivery. | Keep `50` for throughput-oriented workloads. Set `5`–`10` for latency-sensitive consumers (costs a little idle CPU). |
 | `js.poll.interval.ms` | `500` | Poll interval while a client is *cold* (no subscription/assignment and no in-flight produce): only picks up log/stats/error events. The timer is `unref`'d, so an idle client never keeps the process alive. | Keep the default. Lower only if you need faster `event.stats`/`event.log` while idle. |
-| `js.consume.buffer.bytes` | `4194304` (4 MiB) | Size of the reusable buffer one `brk_consume_batch` FFI call fills (up to 500 messages per call). It grows automatically if a single message does not fit, so this is a performance knob, not a limit. | Keep the default. Raise (e.g. `16777216`) if your messages are ≥ 1 MiB so batches stay full; lower (e.g. `262144`) to save memory on many small consumers. |
+| `js.consume.buffer.bytes` | `262144` (256 KiB) | Cap of the buffer one `brk_consume_batch` FFI call fills (up to 500 messages per call). Every batch gets a fresh buffer sized to the traffic (up to this cap) and message key/value are views into it — no per-message copy — so retaining a message keeps at most one such buffer alive. It grows automatically if a single message does not fit, so this is a performance knob, not a limit. | Keep the default. Raise (e.g. `1048576`) if your messages are ≥ 64 KiB so batches stay full; values above ~512 KiB are slower on most allocators (fresh pages per batch). |
 | `js.event.buffer.bytes` | `262144` (256 KiB) | Size of the reusable buffer for the event drain (`brk_events_poll`): delivery reports, rebalance/commit events, stats JSON. Grows automatically when a frame does not fit. | Keep the default. Raise if you enable `statistics.interval.ms` with many topics/partitions (the stats JSON can reach several hundred KiB). |
 | `js.producer.max.pending` | = `queue.buffering.max.messages` (librdkafka default `100000`) | Backpressure threshold of the producer's delivery ledger — the number of produced messages still waiting for a delivery report. Beyond it `produce()` throws `ERR__QUEUE_FULL` synchronously (same as upstream), so you can `poll()` and retry. | Leave it tied to `queue.buffering.max.messages`. Lower both (e.g. `65536`) for large payloads to bound memory and keep the pipeline flowing. |
 | `js.consumer.max.batch.size` | `32` | KafkaJS API only: the maximum number of messages handed to one `eachBatch` call. `eachMessage` is unaffected. | `32` is a good default; raise (`100`–`500`) when your batch handler amortizes work (bulk writes), lower for tighter per-message latency. |
 | `js.consume.prefetch` | `false` | **Experimental.** Serializes consume batches on a shim-owned thread so the JS thread only decodes and emits. Measured +26–33 % consumer throughput on a machine with an idle core, at +33–40 % CPU (see `bench/RESULTS.md`, "Consumer prefetch thread"). Prefetched frames are still delivered after `seek`/`pause`/revoke — see [docs/notes/consumer-prefetch-thread.md](./docs/notes/consumer-prefetch-thread.md) before enabling. | Off by default. Try `true` for high-throughput flowing consumers on ≥ 2 cores when you commit from your handler (`enable.auto.commit=false`). |
 | `js.consume.prefetch.frames` | `4` | Ring depth of the prefetch thread: how many `js.consume.buffer.bytes` frames may be filled ahead of the JS thread. | Keep `4`. More frames only add prefetch depth (memory + at-least-once exposure), not throughput. |
-| `js.consumer.zero.copy` | `false` | Reserved for returning message `value`/`key` as views into the consume buffer instead of copies. **Not yet effective** — messages are always copied today. | Leave unset. |
+| `js.consumer.zero.copy` | `false` | Reserved for a stricter mode where message `value`/`key` are only valid inside the callback. **Not yet effective** — today messages are already views into a per-batch buffer that is never reused, so they are safe to keep. | Leave unset. |
 | `js.poll.worker` | `false` | Reserved for a Worker-based blocking poll mode (design §5.2). **Not yet effective.** The `js.consume.prefetch` experiment above is the shim-side realisation of the same idea. | Leave unset. |
 
 Two librdkafka properties are worth calling out because bun-rdkafka's fast drain

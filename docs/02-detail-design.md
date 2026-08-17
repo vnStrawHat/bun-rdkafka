@@ -320,11 +320,13 @@ Since there are no callbacks from C, JS must actively call `brk_events_poll` /
 
 ```
 HOT state :  the previous poll had data
-   → poll again in the next microtask (setImmediate-style: Promise.resolve().then
-     interleaved with setTimeout(0) so I/O is not starved)
+   → poll again in the next microtask, with a `setImmediate` every 8 rounds so I/O
+     is not starved (NOT setTimeout(0): that is ~1 ms of timer granularity in Bun,
+     which capped the hot loop at ~500 messages per ms — measured 2026-08-17)
 WARM state:  data just ran out
-   → setTimeout 1ms; after N empty rounds back off 1 → 2 → 4 … up to idleMax (default
-     50ms, configurable via 'js.poll.idle.max.ms')
+   → setTimeout 1ms, held at 1ms while data was seen within the last 100 ms (steady
+     traffic stays at timer granularity), then back off 1 → 2 → 4 … up to idleMax
+     (default 50ms, configurable via 'js.poll.idle.max.ms')
 COLD state:  no consumer running, producer outq_len == 0
    → poll only at the producer's pollInterval (default 500ms) to pick up log/stats
 ```
@@ -348,14 +350,20 @@ COLD state:  no consumer running, producer outq_len == 0
 
 ### 5.3 `BatchDecoder` / `EventDecoder`
 
-- Keeps a reusable `ArrayBuffer` (default 4 MB, configurable via `js.consume.buffer.bytes`,
-  auto-grows on `BRK_ERR_BUFFER_TOO_SMALL`).
-- Decodes with a `DataView` + running offset; creates `Buffer`s for key/value:
-  - **Default (safe) mode:** `Buffer.from(view.slice(...))` — a copy; the message lives
-    independently of the reusable buffer.
-  - **Zero-copy mode (opt-in `js.consumer.zero.copy=true`):** returns a `Buffer` that is a
-    view; only valid inside the `eachMessage/eachBatch` callback, clearly documented with
-    warnings. For parse-then-discard pipelines.
+- Every `brk_consume_batch` call fills a **fresh** `Buffer` (sized to the traffic: 2× the
+  previous batch, within 4 KiB … `js.consume.buffer.bytes`, default 256 KiB; auto-grows on
+  `BRK_ERR_BUFFER_TOO_SMALL`). The buffer is never written to again, so key/value/header
+  values are `subarray` **views** into it — no per-message copy — and still live
+  independently of the next poll (ADR-6). Cost: a retained message keeps its batch buffer
+  alive (bounded by the cap; same trade-off as Node's `Buffer` pool, at batch scale).
+  Small caps also win on allocators: blocks ≤ 512 KiB are recycled by mimalloc while
+  larger ones are fresh mmaps (page faults per batch) — measured 2026-08-17.
+- Decodes with a `DataView` + running offset (i64 as two u32 reads, no BigInt); the
+  general `copy: true` mode of the decoder (`Buffer.copyBytesFrom`) remains for callers
+  that decode from a reused buffer.
+- `js.consumer.zero.copy` (reserved): a stricter mode where values are only valid inside
+  the `eachMessage/eachBatch` callback. With per-batch buffers there is little left to
+  gain from it; kept reserved.
 - `TopicNameTable`: `topic_id → string` map; on miss calls `brk_topic_name` once and caches —
   topic names are never repeatedly copied on the hot path.
 
@@ -445,13 +453,13 @@ reference for writing cross-check tests, not code to port):
 |---|---|---|
 | conf handle | C (`brk_conf_new`) | consumed by `brk_client_new`, or `brk_conf_destroy` on early failure |
 | client handle | C | `brk_client_destroy` on `disconnect()`; FinalizationRegistry as the last net |
-| Hot-path buffers (consume/events/produce staging) | JS (reusable `ArrayBuffer`) | JS GC |
+| Hot-path buffers (events/produce staging: reusable `ArrayBuffer`; consume: one fresh `Buffer` per batch, shared by that batch's messages as views) | JS | JS GC |
 | Cold-path JSON results | C (`malloc`) | JS calls `brk_mem_free` right after copying into a string |
 | Strings passed into C | JS (`Buffer` + NUL) | JS; C keeps no pointer after return (the shim copies if it needs to retain) |
 
 Golden rules: **C never keeps a pointer into a JS buffer after the function returns**, and
-**JS never reads a buffer after making the next FFI call that overwrites it** (except in
-zero-copy mode with its explicit contract).
+**JS never reads a buffer after making the next FFI call that overwrites it** (consume
+batch buffers are never passed to C again once messages point into them).
 
 ## 9. Packaging & prebuilt binaries
 
@@ -573,6 +581,6 @@ regressions.
 | ADR-4 | KafkaJS API built on top of the Callback API | Matches upstream architecture, easy behavior cross-checking | Two parallel APIs both calling core |
 | ADR-4b | `consumer.run()`: batch-fetch + a JS scheduler designed for Bun (per-partition queue + partition epoch); upstream is only a semantics reference | Compatible at API/semantics, internals optimized for the pull-model + BatchDecoder | 1:1 port of `_consumer_cache.js`; pushing each message through a `data` event |
 | ADR-5 | ~~Per-platform npm packages via optionalDependencies, no postinstall~~ **Superseded by ADR-8** (2026-08-14) | Modern standard (esbuild/napi-rs), supply-chain safe | postinstall download (blocked in many environments) |
-| ADR-6 | Copy-per-message by default, zero-copy opt-in | Correctness first, speed second | Zero-copy by default (easily causes aliasing bugs for users) |
+| ADR-6 | Messages never alias a buffer that gets reused: originally copy-per-message; since 2026-08-17 a **fresh buffer per consume batch** with messages as views into it (same guarantee — the buffer is retired, never rewritten — at zero per-message copies; cost: a retained message pins its ≤ `js.consume.buffer.bytes` batch buffer). Stricter zero-copy stays opt-in/reserved | Correctness first, speed second | Zero-copy into a reused buffer by default (aliasing bugs for users) |
 | ADR-7 | Ship TS source directly (Bun runs TS), d.ts generated separately | Bun-native, drops the JS build step | Bundling to JS |
 | ADR-8 | Single package + postinstall download from GitHub Release, source-build fallback when no asset matches (§9.1) | User decision 2026-08-14: one package, prebuilts on the release, `build:native` only as fallback. Trade-off accepted: Bun users must add the package to `trustedDependencies` (documented + `bunx bun-rdkafka-install` escape hatch) | ADR-5's per-platform packages (no postinstall, but 6 packages to maintain and a registry-mirror burden) |

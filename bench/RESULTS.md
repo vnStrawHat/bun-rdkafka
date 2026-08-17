@@ -389,3 +389,88 @@ Keep as an **opt-in experiment**. Correctness holds for the flowing path
 600k-message offset checks). Before it can become a default: drop/re-seek
 prefetched frames on seek/pause/revoke (see the note's "Semantics" section),
 and a Windows CI build of the thread primitives.
+
+---
+
+## Consume path optimizations — 2026-08-17 (later the same day)
+
+Profile-driven pass over the consume path after the prefetch experiment had
+shown that ~70 % of the JS thread's wall time was JS-side. Findings and fixes,
+in order of impact (all measured on this box with the micro-benchmarks in the
+session's scratchpad and confirmed by the full run below):
+
+1. **`setTimeout(fn, 0)` in the HOT poll loop costs ~1.14 ms per hop in Bun**
+   (`setImmediate`: 3.7 µs, still yields to I/O). The scheduler used it every
+   8th HOT round, capping the hot loop at ~500 messages per millisecond and
+   punishing small batches badly. → `PollScheduler` uses `setImmediate` for the
+   macrotask break (`SchedulerTimers.setImmediate`, falls back to a 0 ms timer).
+2. **`Buffer.from(ab, off, len)` on a `slice()`d Uint8Array is ~5× slower than
+   `Buffer.copyBytesFrom`** in Bun (creating a second view materializes the
+   ArrayBuffer): 4.6 M/s vs 21–23 M/s at 100 B. `toMessage()` did exactly that
+   for every key/value.
+3. **Fresh buffer per consume batch, messages as views** (ADR-6 updated): the
+   C fill writes into a `Buffer.allocUnsafeSlow` sized to the traffic (2× the
+   previous batch, 4 KiB … `js.consume.buffer.bytes`), and key/value/headers are
+   `subarray` views — no per-message copy at all, and the buffer is never passed
+   to C again so the messages stay valid indefinitely. Trade-off: a retained
+   message pins its (≤ 256 KiB) batch buffer. Sweep of the cap at 1 KiB:
+   64 KiB 1.0 M/s, 256 KiB 1.05 M/s, 512 KiB 1.0 M/s, 1 MiB 0.85 M/s, 4 MiB
+   0.85 M/s — blocks above ~512 KiB are fresh mmaps (page faults per batch),
+   so the default `js.consume.buffer.bytes` moved from 4 MiB to **256 KiB**.
+4. Decoder: hand-rolled hot loop (one bounds check per fixed header, i64 as two
+   u32 reads instead of BigInt, per-batch topic-id cache) — 10.9 → 13.0 M
+   decoded msg/s at 100 B in isolation.
+5. Consumer buffer: `Array.shift()`/`splice(0, n)` replaced by an O(1) FIFO
+   (`core/fifo.ts`).
+6. C: `serialize_msg` writes straight into the out buffer when the record fits
+   (was: scratch + memcpy per message), and the topic intern lookup (mutex +
+   strcmp per message) is cached per fill by `rd_kafka_topic_t*`.
+7. Latency: after data runs out the scheduler now stays at the 1 ms cadence for
+   100 ms before backing off exponentially (`idleHoldMs`), so steady traffic is
+   never met by a 2–8 ms timer.
+
+JS-side cost per message (micro-benchmark, decode + convert + queue + emit):
+100 B 370 ns → 135 ns; 1 KiB 370 ns → ~250 ns.
+
+### Environment & methodology
+
+Same as the prefetch section (4 vCPU / 3.8 GB, broker co-located, Bun
+1.4.0-canary.1, librdkafka 2.15.0 static, upstream 1.10.0 on Node v24.15.0,
+3-run medians, 100k warmup + 500k measured, latency 20 s @ 10k msg/s). Repro:
+`bun bench/compare/run.ts --prefetch`; raw numbers in `bench/compare/results.json`.
+
+### Results (median of 3)
+
+| Case | bun-rdkafka / Bun (default) | + `js.consume.prefetch` | upstream / Node 24 | default ÷ upstream | default ÷ previous session |
+|---|---:|---:|---:|---:|---:|
+| consumer 100B | **1,588,927 msg/s** | 1,689,034 | 396,047 | **4.01×** | 1.59× (997k) |
+| consumer 1KB | **1,045,989** | 850,449 | 223,684 | **4.68×** | 1.54× (678k) |
+| e2e latency p50/p99 @10k msg/s | **2 / 4 ms** | 2 / 4 ms | 2 / 3 ms | — | was 4 / 6 ms |
+| producer 100B acks=1 | 906,242 | (unchanged path) | 713,628 | 1.27× | — |
+| producer 100B acks=all | 934,675 | | 703,847 | 1.33× | — |
+| producer 1KB acks=1 | 468,174 | | 578,442 | 0.81× | — |
+| producer 1KB acks=all | 595,660 | | 572,919 | 1.04× | — |
+
+CPU of the consuming process (single run each): 100 B 1.59 M msg/s @ 114 %
+(prefetch: 1.55 M @ 134 %); 1 KiB 0.79–1.05 M msg/s @ 108 % (prefetch:
+0.81 M @ 123 %). Both consumer cases vary ±15 % run to run at 1 KiB on this box
+(the measured window is now < 0.5 s; the topic holds 600k messages).
+
+### Analysis
+
+- **Consumer 1.55–1.6× faster than this morning, 4–4.7× upstream.** The JS
+  thread's profile is now ~66 % inside `brk_consume_batch` (librdkafka fetch +
+  serialization) and ~15 % decode/emit; the process is at ~110 % of a core with
+  librdkafka's threads included, i.e. the JS thread is no longer saturated.
+- **The prefetch thread stopped paying off** (+6 % at 100 B, −19 % at 1 KiB
+  in this run, +20 % CPU): its whole premise was a saturated JS thread. It stays
+  opt-in and documented as such; a case where the JS thread is busy with other
+  work (HTTP server + consumer in one process) may still benefit.
+- **Where the ceiling is now:** the fetch side — librdkafka's broker thread
+  parsing the fetch responses and the co-located broker on a 4-vCPU box.
+  Nothing on the JS side would move it much further here.
+- **Latency p50 = upstream** (2 ms); p99 4 ms vs 3 ms is Bun's ~1 ms timer
+  granularity on the idle poll (`setTimeout(1)` measures 1.14 ms).
+- Producer numbers moved with the environment again (100 B 1.27–1.33× vs
+  1.41–1.46× this morning; 1 KB 0.81× / 1.04× vs 1.00× / 0.98×) — the producer
+  path is untouched; see §M6d for the variance discussion.
