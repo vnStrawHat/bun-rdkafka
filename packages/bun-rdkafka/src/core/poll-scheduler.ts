@@ -7,8 +7,10 @@
  * ```
  * HOT   : the last poll had data      → poll again on the next microtask,
  *         yielding a macrotask every `macrotaskEvery` rounds to avoid starving I/O
- * WARM  : data just ran out           → backoff 1 → 2 → 4 … → idleMaxMs
- *         (default 50ms, option `js.poll.idle.max.ms`)
+ * WARM  : data just ran out           → poll every idleMinMs (1ms) while data
+ *         was seen within the last `idleHoldMs` (100ms — keeps latency at
+ *         timer granularity for steady traffic), then back off
+ *         1 → 2 → 4 … → idleMaxMs (default 50ms, option `js.poll.idle.max.ms`)
  * COLD  : `isCold()` = true (no consumer, producer outq empty)
  *         → a `coldIntervalMs` timer (default 500ms), `unref()`ed so it does
  *           not keep the process alive
@@ -53,6 +55,13 @@ export interface SchedulerTimers {
   setTimer(fn: () => void, ms: number, unref: boolean): TimerHandle;
   clearTimer(handle: TimerHandle): void;
   setMicrotask(fn: () => void): void;
+  /**
+   * Macrotask that still lets the event loop run its I/O phase. Optional:
+   * without it the scheduler falls back to `setTimer(fn, 0)` — which in Bun
+   * (like Node) has ~1 ms of granularity, versus a few µs for `setImmediate`.
+   */
+  setImmediate?(fn: () => void): TimerHandle;
+  clearImmediate?(handle: TimerHandle): void;
 }
 
 export const defaultTimers: SchedulerTimers = {
@@ -67,6 +76,12 @@ export const defaultTimers: SchedulerTimers = {
   setMicrotask(fn) {
     queueMicrotask(fn);
   },
+  setImmediate(fn) {
+    return setImmediate(fn);
+  },
+  clearImmediate(handle) {
+    clearImmediate(handle as ReturnType<typeof setImmediate>);
+  },
 };
 
 export interface PollSchedulerOptions {
@@ -76,6 +91,13 @@ export interface PollSchedulerOptions {
   idleMinMs?: number;
   /** Backoff ceiling (`js.poll.idle.max.ms`). Default 50. */
   idleMaxMs?: number;
+  /**
+   * After the last non-empty poll, keep polling at `idleMinMs` for this long
+   * before the exponential backoff kicks in. Default 100.
+   */
+  idleHoldMs?: number;
+  /** Clock used for `idleHoldMs` (tests inject a fake one). Default `Date.now`. */
+  now?: () => number;
   /** Poll interval while COLD (ms). Default 500. */
   coldIntervalMs?: number;
   /** Whether falling into COLD is allowed (e.g. producer outq empty, no consumer). */
@@ -91,6 +113,8 @@ export class PollScheduler {
   private readonly pollFn: () => number;
   private readonly idleMinMs: number;
   private readonly idleMaxMs: number;
+  private readonly idleHoldMs: number;
+  private readonly now: () => number;
   private readonly coldIntervalMs: number;
   private readonly macrotaskEvery: number;
   private readonly isColdFn: (() => boolean) | undefined;
@@ -104,13 +128,18 @@ export class PollScheduler {
   /** Invalidates callbacks scheduled before a cancellation. */
   private epoch = 0;
   private hotTicks = 0;
+  private immediate: TimerHandle | undefined;
   private emptyPollsValue = 0;
   private pollCountValue = 0;
+  /** Timestamp of the last non-empty poll (-Infinity = never). */
+  private lastDataAt = -Infinity;
 
   constructor(options: PollSchedulerOptions) {
     this.pollFn = options.poll;
     this.idleMinMs = options.idleMinMs ?? 1;
     this.idleMaxMs = options.idleMaxMs ?? 50;
+    this.idleHoldMs = options.idleHoldMs ?? 100;
+    this.now = options.now ?? Date.now;
     this.coldIntervalMs = options.coldIntervalMs ?? 500;
     this.macrotaskEvery = Math.max(1, options.macrotaskEvery ?? 8);
     this.isColdFn = options.isCold;
@@ -207,6 +236,7 @@ export class PollScheduler {
       this.emptyPollsValue = 0;
       this.delay = 0;
       this.phaseValue = "HOT";
+      this.lastDataAt = this.now();
       return;
     }
     this.emptyPollsValue++;
@@ -215,7 +245,12 @@ export class PollScheduler {
       this.phaseValue = "COLD";
       return;
     }
-    this.delay = this.delay === 0 ? this.idleMinMs : Math.min(this.delay * 2, this.idleMaxMs);
+    if (this.delay === 0 || this.now() - this.lastDataAt < this.idleHoldMs) {
+      // Recent traffic: stay at the finest cadence (a burst is probably coming).
+      this.delay = this.idleMinMs;
+    } else {
+      this.delay = Math.min(this.delay * 2, this.idleMaxMs);
+    }
     this.phaseValue = "WARM";
   }
 
@@ -225,6 +260,10 @@ export class PollScheduler {
     if (this.timer !== undefined) {
       this.timers.clearTimer(this.timer);
       this.timer = undefined;
+    }
+    if (this.immediate !== undefined) {
+      this.timers.clearImmediate?.(this.immediate);
+      this.immediate = undefined;
     }
   }
 
@@ -236,6 +275,7 @@ export class PollScheduler {
       if (epoch !== this.epoch || !this.running) return;
       this.scheduled = false;
       this.timer = undefined;
+      this.immediate = undefined;
       this.runOnce();
       this.schedule();
     };
@@ -243,8 +283,14 @@ export class PollScheduler {
     if (this.phaseValue === "HOT") {
       this.hotTicks++;
       // Interleave macrotasks so the event loop's I/O is not starved (design §5.2).
+      // setImmediate when available: it yields to I/O like a timer but costs
+      // µs, not the ~1 ms timer granularity that would cap the hot loop.
       if (this.hotTicks % this.macrotaskEvery === 0) {
-        this.timer = this.timers.setTimer(tick, 0, false);
+        if (this.timers.setImmediate !== undefined) {
+          this.immediate = this.timers.setImmediate(tick);
+        } else {
+          this.timer = this.timers.setTimer(tick, 0, false);
+        }
       } else {
         this.timers.setMicrotask(tick);
       }

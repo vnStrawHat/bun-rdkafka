@@ -34,6 +34,15 @@ class FakeTimers implements SchedulerTimers {
     this.microtasks.push(fn);
   }
 
+  /** Modelled as a 0 ms timer: it runs on the next event-loop turn, after microtasks. */
+  setImmediate(fn: () => void): TimerHandle {
+    return this.setTimer(fn, 0, false);
+  }
+
+  clearImmediate(handle: TimerHandle): void {
+    this.clearTimer(handle);
+  }
+
   /** Runs one scheduled round (microtasks first, like the real event loop). */
   step(): void {
     if (this.microtasks.length > 0) {
@@ -122,6 +131,34 @@ describe("HOT / WARM / COLD transitions", () => {
     expect(timers.microtasks).toHaveLength(0);
     expect(timers.timers).toHaveLength(1);
     expect(timers.lastTimer()).toMatchObject({ ms: 0, unref: false });
+  });
+
+  test("recent data holds the backoff at idleMin for idleHoldMs", () => {
+    let clock = 1000;
+    const results = [5, 0, 0, 0, 0, 0, 0];
+    let i = 0;
+    const timers = new FakeTimers();
+    const scheduler = new PollScheduler({
+      poll: () => results[Math.min(i++, results.length - 1)]!,
+      timers,
+      idleMaxMs: 8,
+      idleHoldMs: 100,
+      now: () => clock,
+    });
+    scheduler.start();
+    timers.step(); // data → HOT (lastDataAt = 1000)
+    const delays: number[] = [];
+    for (let k = 0; k < 3; k++) {
+      timers.step();
+      delays.push(scheduler.nextDelayMs);
+      clock += 30; // 90ms of emptiness: still inside the hold window
+    }
+    expect(delays).toEqual([1, 1, 1]);
+    clock += 20; // 110ms since data → backoff resumes
+    timers.step();
+    expect(scheduler.nextDelayMs).toBe(2);
+    timers.step();
+    expect(scheduler.nextDelayMs).toBe(4);
   });
 
   test("data exhausted → WARM with backoff 1 → 2 → 4 … → idleMax", () => {
