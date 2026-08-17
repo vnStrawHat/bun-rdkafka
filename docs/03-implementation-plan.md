@@ -204,6 +204,11 @@ binary protocol, the PollScheduler, no event-loop blocking, no crashes.
       directly.
 - [ ] README (quick start, comparison with upstream — including the fact that upstream does not run on Bun 1.4 and the M6 bench table), typedoc API site, MIGRATION.md from confluent-kafka-javascript, CONTRIBUTING (local native build, running integration).
 - [ ] Re-walk the v1.0 acceptance checklist in spec §8; close remaining differences or record them publicly.
+- [x] KafkaJS API gaps closed (2026-08-17): `Consumer.committed()/storeOffsets()/logger()/
+      dependentAdmin()/_getInternalClient()`, `pause()` returns a resume fn, `rebalance_cb`
+      with `assignmentFns` (upstream semantics), `producer.sendOffsets({consumer})` works with
+      the KafkaJS Consumer; the shim now forwards librdkafka's log queue (`event.log` was
+      silently dropped before). Exclusions removed from `test/conformance/exclusions.ts`.
 - [ ] Tag `v1.0.0`.
 
 ---
