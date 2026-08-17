@@ -526,12 +526,14 @@ describe("ConsumerStream", () => {
       waitInterval: 5,
     });
     expect(s.readableObjectMode).toBe(false);
-    const chunks: Buffer[] = [];
+    // Byte-mode Readables may coalesce buffered chunks on read(), so assert on
+    // the concatenated bytes rather than on chunk boundaries.
+    let received = "";
     for await (const chunk of s) {
-      chunks.push(chunk as Buffer);
-      if (chunks.length === 2) break;
+      received += (chunk as Buffer).toString();
+      if (received.length >= "m0m1".length) break;
     }
-    expect(chunks.map((b) => b.toString())).toEqual(["m0", "m1"]);
+    expect(received).toBe("m0m1");
     expect(c.disconnectCalls).toBe(1);
   });
 
