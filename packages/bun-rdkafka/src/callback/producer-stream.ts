@@ -154,7 +154,7 @@ export class ProducerStream extends Writable {
     cb: WriteCallback,
   ): void {
     if (!this.producer.isConnected()) {
-      this.#whenReady(() => this._writev(chunks, cb));
+      this.#whenReady(() => this._writev(chunks, cb), cb);
       return;
     }
     this.#produceAll(chunks.map((c) => c.chunk), cb);
@@ -166,7 +166,7 @@ export class ProducerStream extends Writable {
       return;
     }
     if (!this.producer.isConnected()) {
-      this.#whenReady(() => this._write(chunk, encoding, cb));
+      this.#whenReady(() => this._write(chunk, encoding, cb), cb);
       return;
     }
     this.#produceAll([chunk], cb);
@@ -174,15 +174,21 @@ export class ProducerStream extends Writable {
 
   #writeMessage(message: ProducerStreamMessage, cb: WriteCallback): void {
     if (!this.producer.isConnected()) {
-      this.#whenReady(() => this.#writeMessage(message, cb));
+      this.#whenReady(() => this.#writeMessage(message, cb), cb);
       return;
     }
     this.#produceAll([message], cb);
   }
 
-  /** Runs `fn` on the producer's next `ready` (writes queued before connect). */
-  #whenReady(fn: () => void): void {
-    this.producer.once("ready", fn);
+  /**
+   * Runs `fn` on the producer's next `ready` (writes queued before connect).
+   * If the stream was destroyed meanwhile, the write fails instead of producing.
+   */
+  #whenReady(fn: () => void, cb: WriteCallback): void {
+    this.producer.once("ready", () => {
+      if (this.destroyed) cb(new Error("ProducerStream destroyed before the producer was ready"));
+      else fn();
+    });
   }
 
   /**
