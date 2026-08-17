@@ -48,7 +48,12 @@ import {
 import type { BrkAdminResultEvent } from "../core/batch-decoder.ts";
 import type { ClientConfig } from "../core/config.ts";
 import { ERROR_CODES, LibrdKafkaError } from "../core/errors.ts";
-import { Client, type ClientInternalOptions } from "./client.ts";
+import {
+  Client,
+  type ClientEventMap,
+  type ClientEvents,
+  type ClientInternalOptions,
+} from "./client.ts";
 
 /* ========================================================================== */
 /* Public types (shapes cross-checked against upstream)                        */
@@ -248,7 +253,10 @@ function splitOptions<T>(
 /* AdminClient                                                                 */
 /* ========================================================================== */
 
-export class AdminClient extends Client {
+/** Events of {@link AdminClient} — the client events only. */
+export type AdminClientEventMap = ClientEventMap;
+
+export class AdminClient extends Client<AdminClientEventMap> {
   /** Host client when built via `createFrom` — transport rides its handle. */
   private readonly host: Client | undefined;
   /** Waits for the standalone connect (create() is immediately usable, like upstream). */
@@ -277,7 +285,9 @@ export class AdminClient extends Client {
   ): AdminClient {
     const admin = new AdminClient(conf, undefined, internal ?? {});
     if (eventHandlers) {
-      for (const [name, handler] of Object.entries(eventHandlers)) admin.on(name, handler);
+      for (const [name, handler] of Object.entries(eventHandlers)) {
+        admin.on(name as ClientEvents, handler as ClientEventMap[ClientEvents]);
+      }
     }
     admin.readyPromise = new Promise<void>((resolve, reject) => {
       admin.connect({}, (err) => (err ? reject(err) : resolve()));
@@ -296,7 +306,7 @@ export class AdminClient extends Client {
     const admin = new AdminClient(undefined, existingClient);
     if (eventHandlers) {
       for (const [name, handler] of Object.entries(eventHandlers)) {
-        existingClient.on(name, handler);
+        existingClient.on(name as ClientEvents, handler as ClientEventMap[ClientEvents]);
       }
     }
     admin.readyPromise = existingClient.isConnected()

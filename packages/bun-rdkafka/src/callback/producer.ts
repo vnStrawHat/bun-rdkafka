@@ -39,6 +39,7 @@ import { DeliveryLedger, type DeliveryResult } from "../core/delivery-ledger.ts"
 import { ERROR_CODES, LibrdKafkaError, errorDescription } from "../core/errors.ts";
 import type { NativeClient } from "../core/native-client.ts";
 import {
+  type ClientEventMap,
   Client,
   type ClientInternalOptions,
   type DisconnectCallback,
@@ -194,7 +195,16 @@ export function normalizeHeaders(headers: ProduceHeaders | undefined): ProduceHe
 /* Producer                                                                    */
 /* ========================================================================== */
 
-export class Producer extends Client {
+/** Events of {@link Producer}: the client events plus `delivery-report`. */
+export interface ProducerEventMap extends ClientEventMap {
+  /** One per produced message once the broker acked (or failed) it — needs `dr_cb`/`dr_msg_cb`. */
+  "delivery-report": DeliveryReportListener;
+}
+
+/** Event names of {@link ProducerEventMap}. */
+export type ProducerEvents = keyof ProducerEventMap;
+
+export class Producer extends Client<ProducerEventMap> {
   /**
    * Creates a `Producer` and wraps it in a Writable {@link ProducerStream}
    * (upstream `Producer.createWriteStream`). See `callback/producer-stream.ts`.

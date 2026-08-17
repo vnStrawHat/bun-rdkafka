@@ -95,7 +95,14 @@ export {
   type TopicDescription,
   type TopicPartitionDescription,
 } from "./callback/admin.ts";
-export type { OauthBearerToken, OauthBearerTokenCallback } from "./callback/client.ts";
+export type {
+  ClientEventMap,
+  ClientEvents,
+  EventListenerMap,
+  OauthBearerToken,
+  OauthBearerTokenCallback,
+} from "./callback/client.ts";
+export type { AdminClientEventMap } from "./callback/admin.ts";
 
 // M2 — Producer (Callback API)
 // Note: the TopicPartitionOffset type uses kafka-consumer.ts's export (M3);
@@ -110,6 +117,8 @@ export {
   type PartitionerCallback,
   type ProduceHeaders,
   type ProduceValue,
+  type ProducerEventMap,
+  type ProducerEvents,
   type TransactionCallback,
 } from "./callback/producer.ts";
 export {
@@ -123,6 +132,8 @@ export {
 export {
   KafkaConsumer,
   type Assignment,
+  type KafkaConsumerEventMap,
+  type KafkaConsumerEvents,
   type CommittedCallback,
   type ConsumeCallback,
   type EofEvent,

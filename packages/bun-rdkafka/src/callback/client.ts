@@ -197,10 +197,48 @@ function notConnectedError(context: string): LibrdKafkaError {
 }
 
 /* ========================================================================== */
+/* Typed events                                                                */
+/* ========================================================================== */
+
+/**
+ * Shape of an event map: event name → listener signature. Subclasses extend
+ * {@link ClientEventMap} with their own events, and `on()`/`once()`/`emit()`
+ * are typed against it, so editors can complete `client.on("…")` and check the
+ * listener's parameters (mirrors upstream's `Client<Events>`).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- listener parameter lists are heterogeneous by design
+export type EventListenerMap<T> = { [K in keyof T]: (...args: any[]) => void };
+
+/** Events emitted by every client (Producer, KafkaConsumer, AdminClient). */
+export interface ClientEventMap {
+  /** Connected and the first metadata arrived. */
+  ready: (info: ReadyInfo, metadata: Metadata) => void;
+  /** `disconnect()` completed. */
+  disconnected: (metrics: ClientMetrics) => void;
+  /** `connect()` failed (also delivered to the connect callback). */
+  "connection.failure": (error: LibrdKafkaError, metrics: ClientMetrics) => void;
+  /** librdkafka error events (`getLastError()` remembers the last one). */
+  "event.error": (error: LibrdKafkaError) => void;
+  /** librdkafka log lines (needs `event_cb`/`debug` — see the librdkafka docs). */
+  "event.log": (log: LogEventPayload) => void;
+  /** Statistics JSON, every `statistics.interval.ms`. */
+  "event.stats": (stats: StatsEventPayload) => void;
+  /** Broker throttle notifications. */
+  "event.throttle": (throttle: ThrottleEventPayload) => void;
+  /** Raw event frames (only with `event_cb: true` in the config). */
+  "event.event": (event: BrkEvent) => void;
+  /** Alias of `event.event` (upstream compatibility). */
+  event: (event: BrkEvent) => void;
+}
+
+/** Event names of {@link ClientEventMap}. */
+export type ClientEvents = keyof ClientEventMap;
+
+/* ========================================================================== */
 /* Client                                                                      */
 /* ========================================================================== */
 
-export class Client extends EventEmitter {
+export class Client<Events extends EventListenerMap<Events> = ClientEventMap> extends EventEmitter {
   readonly clientType: BrkClientType;
 
   protected native: NativeClient | undefined;
@@ -232,13 +270,13 @@ export class Client extends EventEmitter {
 
     // Upstream remembers the last `event.error` for getLastError() — subclasses
     // emit through the same event, so one listener covers every path.
-    this.on("event.error", (err: unknown) => {
+    super.on("event.error", (err: unknown) => {
       if (err instanceof LibrdKafkaError) this.lastError = err;
     });
 
     const eventCb = this.built.callbacks.event_cb;
     this.emitRawEvents = eventCb !== undefined;
-    if (typeof eventCb === "function") this.on("event.event", eventCb as (event: BrkEvent) => void);
+    if (typeof eventCb === "function") super.on("event.event", eventCb as (event: BrkEvent) => void);
   }
 
   /** Client name, of the form `producer#1` / `consumer#2`. */
@@ -271,6 +309,54 @@ export class Client extends EventEmitter {
 
   /* ------------------------------------------------------------- connect */
 
+  /* ------------------------------------------------------------ typed events */
+
+  override on<E extends keyof Events & string>(event: E, listener: Events[E]): this {
+    return super.on(event, listener);
+  }
+
+  override once<E extends keyof Events & string>(event: E, listener: Events[E]): this {
+    return super.once(event, listener);
+  }
+
+  override off<E extends keyof Events & string>(event: E, listener: Events[E]): this {
+    return super.off(event, listener);
+  }
+
+  override addListener<E extends keyof Events & string>(event: E, listener: Events[E]): this {
+    return super.addListener(event, listener);
+  }
+
+  override removeListener<E extends keyof Events & string>(event: E, listener: Events[E]): this {
+    return super.removeListener(event, listener);
+  }
+
+  override prependListener<E extends keyof Events & string>(event: E, listener: Events[E]): this {
+    return super.prependListener(event, listener);
+  }
+
+  override prependOnceListener<E extends keyof Events & string>(
+    event: E,
+    listener: Events[E],
+  ): this {
+    return super.prependOnceListener(event, listener);
+  }
+
+  override emit<E extends keyof Events & string>(event: E, ...args: Parameters<Events[E]>): boolean {
+    return super.emit(event, ...args);
+  }
+
+  /**
+   * `emit()` for the events of {@link ClientEventMap} while `Events` is still
+   * generic (base-class code paths). Subclasses with a concrete map use `emit()`.
+   */
+  protected emitBase<E extends keyof ClientEventMap>(
+    event: E,
+    ...args: Parameters<ClientEventMap[E]>
+  ): boolean {
+    return super.emit(event, ...args);
+  }
+
   /**
    * Creates the native handle + starts the PollScheduler, then fetches the
    * first metadata to confirm the connection: success → emit `ready` +
@@ -301,7 +387,7 @@ export class Client extends EventEmitter {
     } catch (error) {
       const err = this.recordError(toLibrdKafkaError(error, "connect"));
       queueMicrotask(() => {
-        this.emit("event.error", err);
+        this.emitBase("event.error", err);
         cb?.(err);
       });
       return this;
@@ -324,16 +410,16 @@ export class Client extends EventEmitter {
         const err = this.recordError(toLibrdKafkaError(error, "connect"));
         const metrics: ClientMetrics = { connectionOpened: this.connectionOpenedAt };
         this.teardown(nc);
-        this.emit("event.error", err);
+        this.emitBase("event.error", err);
         // Upstream: the handle came up but the first metadata fetch failed →
         // `connection.failure` (err, metrics) in addition to the connect cb.
-        this.emit("connection.failure", err, metrics);
+        this.emitBase("connection.failure", err, metrics);
         cb?.(err);
         return;
       }
       nc.markReady();
       this.readyAtMs = Date.now();
-      this.emit("ready", { name: this.name } satisfies ReadyInfo, metadata);
+      this.emitBase("ready", { name: this.name } satisfies ReadyInfo, metadata);
       cb?.(null, metadata);
     });
     return this;
@@ -349,7 +435,7 @@ export class Client extends EventEmitter {
     const metrics: ClientMetrics = { connectionOpened: this.connectionOpenedAt };
     this.teardown(nc);
     queueMicrotask(() => {
-      this.emit("disconnected", metrics);
+      this.emitBase("disconnected", metrics);
       cb?.(null, metrics);
     });
     return this;
@@ -475,7 +561,7 @@ export class Client extends EventEmitter {
    * `warning` in flowing mode (upstream semantics).
    */
   protected onErrorEvent(err: LibrdKafkaError): void {
-    this.emit("event.error", err);
+    this.emitBase("event.error", err);
   }
 
   /**
@@ -516,7 +602,7 @@ export class Client extends EventEmitter {
       coldIntervalMs: this.built.js.pollIntervalMs,
       isCold: () => this.isCold(),
       onError: (error) => {
-        this.emit("event.error", toLibrdKafkaError(error, "poll"));
+        this.emitBase("event.error", toLibrdKafkaError(error, "poll"));
       },
       ...(this.internal.timers !== undefined ? { timers: this.internal.timers } : {}),
     });
@@ -533,8 +619,8 @@ export class Client extends EventEmitter {
       if (this.emitRawEvents) {
         // `event_cb` opt-in: the decoded frame as-is (`{ type, ...payload }`),
         // under upstream's `event.event` name and the short `event` alias.
-        this.emit("event.event", event);
-        this.emit("event", event);
+        this.emitBase("event.event", event);
+        this.emitBase("event", event);
       }
     }
     return events.length + this.pollTick();
@@ -551,17 +637,17 @@ export class Client extends EventEmitter {
         );
         return;
       case BRK_EVENT_LOG:
-        this.emit("event.log", {
+        this.emitBase("event.log", {
           severity: event.level,
           fac: event.fac,
           message: event.message,
         } satisfies LogEventPayload);
         return;
       case BRK_EVENT_STATS:
-        this.emit("event.stats", { message: event.json } satisfies StatsEventPayload);
+        this.emitBase("event.stats", { message: event.json } satisfies StatsEventPayload);
         return;
       case BRK_EVENT_THROTTLE:
-        this.emit("event.throttle", {
+        this.emitBase("event.throttle", {
           brokerName: event.brokerName,
           brokerId: event.brokerId,
           throttleTime: event.throttleMs,
@@ -600,7 +686,7 @@ export class Client extends EventEmitter {
     const nc = this.native;
     const cb = this.configCallbacks.oauthbearer_token_refresh_cb;
     if (typeof cb !== "function") {
-      this.emit(
+      this.emitBase(
         "event.error",
         new LibrdKafkaError(
           "bun-rdkafka: received an OAUTHBEARER token refresh but the config has no " +
@@ -616,7 +702,7 @@ export class Client extends EventEmitter {
       try {
         if (err !== null || token === undefined) {
           nc.setOauthBearerTokenFailure(err?.message ?? "token refresh failed");
-          this.emit("event.error", toLibrdKafkaError(err ?? "token refresh failed", "oauthbearer"));
+          this.emitBase("event.error", toLibrdKafkaError(err ?? "token refresh failed", "oauthbearer"));
           return;
         }
         const value = token.tokenValue ?? token.value ?? token.token;
@@ -636,7 +722,7 @@ export class Client extends EventEmitter {
         } catch {
           /* handle just closed — ignore */
         }
-        this.emit("event.error", toLibrdKafkaError(error, "oauthbearer"));
+        this.emitBase("event.error", toLibrdKafkaError(error, "oauthbearer"));
       }
     };
     let result: unknown;

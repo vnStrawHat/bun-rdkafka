@@ -54,7 +54,7 @@ import type {
 import type { ClientConfig } from "../core/config.ts";
 import { ERROR_CODES, LibrdKafkaError } from "../core/errors.ts";
 import type { NativeClient } from "../core/native-client.ts";
-import { Client, type ClientInternalOptions } from "./client.ts";
+import { Client, type ClientEventMap, type ClientInternalOptions } from "./client.ts";
 import { ConsumerStream, type ReadStreamOptions } from "./consumer-stream.ts";
 
 /* ========================================================================== */
@@ -206,7 +206,30 @@ interface PendingConsume {
 /* KafkaConsumer                                                               */
 /* ========================================================================== */
 
-export class KafkaConsumer extends Client {
+/** Events of {@link KafkaConsumer}: the client events plus the consumer's own. */
+export interface KafkaConsumerEventMap extends ClientEventMap {
+  /** One message (flowing mode, after `consume()` with no arguments). */
+  data: (message: Message) => void;
+  /** End of a partition reached (needs `enable.partition.eof=true`). */
+  "partition.eof": (eof: EofEvent) => void;
+  /** Partitions assigned/revoked; `err.code` is ERR__ASSIGN_PARTITIONS or ERR__REVOKE_PARTITIONS. */
+  rebalance: (err: LibrdKafkaError, assignments: TopicPartition[]) => void;
+  /** A `rebalance_cb` (or the default assign/unassign) threw. */
+  "rebalance.error": (error: unknown) => void;
+  /** `subscribe()` succeeded. */
+  subscribed: (topics: SubscribeTopicList) => void;
+  /** `unsubscribe()` succeeded. */
+  unsubscribed: () => void;
+  /** Result of an async commit (`err` is `null` on success). */
+  "offset.commit": (err: LibrdKafkaError | null, offsets: TopicPartitionOffset[]) => void;
+  /** Transient subscription errors in flowing mode (unknown topic, authorization) — upstream semantics. */
+  warning: (err: LibrdKafkaError) => void;
+}
+
+/** Event names of {@link KafkaConsumerEventMap}. */
+export type KafkaConsumerEvents = keyof KafkaConsumerEventMap;
+
+export class KafkaConsumer extends Client<KafkaConsumerEventMap> {
   /**
    * Creates a `KafkaConsumer` and wraps it in a Readable {@link ConsumerStream}
    * (upstream `KafkaConsumer.createReadStream`). See `callback/consumer-stream.ts`.
