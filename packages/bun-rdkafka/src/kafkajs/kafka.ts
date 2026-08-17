@@ -23,11 +23,17 @@ import { KafkaJSError } from "./errors.ts";
 import { Producer } from "./producer.ts";
 import { Consumer } from "./consumer.ts";
 import { Admin } from "./admin.ts";
+import type {
+  AdminConstructorConfig,
+  CommonConstructorConfig,
+  ConsumerConstructorConfig,
+  ProducerConstructorConfig,
+} from "./config-types.ts";
 
 export class Kafka {
   #commonClientConfig: CommonRawConfig;
 
-  constructor(config?: CommonRawConfig) {
+  constructor(config?: CommonConstructorConfig) {
     this.#commonClientConfig = config ?? {};
     const disallowedKey = checkIfKafkaJsKeysPresent("common", this.#commonClientConfig);
     if (disallowedKey !== null) {
@@ -39,7 +45,7 @@ export class Kafka {
     return mergeRawConfigs(this.#commonClientConfig, config);
   }
 
-  producer(config?: CommonRawConfig): Producer {
+  producer(config?: ProducerConstructorConfig): Producer {
     const disallowedKey = checkIfKafkaJsKeysPresent("producer", config ?? {});
     if (disallowedKey !== null) {
       throw new KafkaJSError(
@@ -49,7 +55,7 @@ export class Kafka {
     return new Producer(this.#merged(config));
   }
 
-  consumer(config?: CommonRawConfig): Consumer {
+  consumer(config?: ConsumerConstructorConfig): Consumer {
     const disallowedKey = checkIfKafkaJsKeysPresent("consumer", config ?? {});
     if (disallowedKey !== null) {
       throw new KafkaJSError(
@@ -59,7 +65,7 @@ export class Kafka {
     return new Consumer(this.#merged(config));
   }
 
-  admin(config?: CommonRawConfig): Admin {
+  admin(config?: AdminConstructorConfig): Admin {
     const disallowedKey = checkIfKafkaJsKeysPresent("admin", config ?? {});
     if (disallowedKey !== null) {
       throw new KafkaJSError(CompatibilityErrorMessages.kafkaJSClientKey(disallowedKey, "admin"));

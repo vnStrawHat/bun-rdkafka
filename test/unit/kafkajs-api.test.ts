@@ -71,7 +71,8 @@ describe("Producer (not connected)", () => {
   });
 
   test("config errors surface in connect() (not the constructor)", async () => {
-    const p = new Kafka({}).producer({ kafkaJS: { retry: { factor: 0.5 } } });
+    // `factor` is rejected at runtime (and not part of RetryOptions) — cast to reach the runtime check.
+    const p = new Kafka({}).producer({ kafkaJS: { retry: { factor: 0.5 } } } as never);
     await expectCode(p.connect(), ERROR_CODES.ERR__INVALID_ARG);
   });
 });

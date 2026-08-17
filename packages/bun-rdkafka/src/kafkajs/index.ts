@@ -44,6 +44,20 @@ export {
 
 export { CompressionTypes } from "./producer.ts";
 export type {
+  AdminConfig,
+  AdminConstructorConfig,
+  CommonConstructorConfig,
+  ConsumerConfig,
+  ConsumerConstructorConfig,
+  KafkaConfig,
+  PartitionAssignerName,
+  ProducerConfig,
+  ProducerConstructorConfig,
+  RetryOptions,
+  SASLMechanism,
+  SASLOptions,
+} from "./config-types.ts";
+export type {
   IHeaders,
   Message,
   Producer,
