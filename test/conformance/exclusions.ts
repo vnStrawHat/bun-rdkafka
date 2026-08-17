@@ -92,33 +92,6 @@ export const EXCLUSIONS: readonly Exclusion[] = [
   },
 
   /* ---------------------------------------------------------------------- *
-   * 3. Outside the FR-1/FR-2 commitments — the Stream API                   *
-   * ---------------------------------------------------------------------- */
-  {
-    path: "rdkafka:module.createReadStream",
-    reason:
-      "Not committed: spec FR-1 §4 does not list the Stream API " +
-      "(ConsumerStream/ProducerStream). Needs node:stream Readable/Writable layers " +
-      "+ dedicated backpressure. To be considered at M8.",
-    milestone: "M8",
-  },
-  {
-    path: "rdkafka:module.createWriteStream",
-    reason: "Not committed — see rdkafka:module.createReadStream.",
-    milestone: "M8",
-  },
-  {
-    path: "rdkafka:KafkaConsumer.static.createReadStream",
-    reason: "Not committed — see rdkafka:module.createReadStream.",
-    milestone: "M8",
-  },
-  {
-    path: "rdkafka:Producer.static.createWriteStream",
-    reason: "Not committed — see rdkafka:module.createReadStream.",
-    milestone: "M8",
-  },
-
-  /* ---------------------------------------------------------------------- *
    * 3b. The upstream `.d.ts` diverging from upstream's own implementation   *
    * ---------------------------------------------------------------------- */
   {

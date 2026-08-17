@@ -30,6 +30,12 @@ export {
 export { CODES, ERROR_CODES, LibrdKafkaError } from "./core/errors.ts";
 export type { ClientConfig } from "./core/config.ts";
 
+import type { ClientConfig } from "./core/config.ts";
+import { KafkaConsumer } from "./callback/kafka-consumer.ts";
+import { Producer } from "./callback/producer.ts";
+import { ConsumerStream, type ReadStreamOptions } from "./callback/consumer-stream.ts";
+import { ProducerStream, type WriteStreamOptions } from "./callback/producer-stream.ts";
+
 /**
  * Version of the statically linked librdkafka. This is a FUNCTION (not a
  * string like upstream) so importing the package does not force a dlopen —
@@ -122,3 +128,36 @@ export {
   type TopicPartitionOffset,
   type TopicPartitionOffsetAndMetadata,
 } from "./callback/kafka-consumer.ts";
+
+// M8 — Stream API (Callback API): Readable/Writable over KafkaConsumer/Producer
+export {
+  ConsumerStream,
+  KafkaConsumerStream,
+  type ConsumerStreamMessage,
+  type ReadStreamOptions,
+  type StreamSubscribeTopic,
+  type StreamTopics,
+} from "./callback/consumer-stream.ts";
+export {
+  ProducerStream,
+  type ProducerStreamMessage,
+  type WriteStreamOptions,
+} from "./callback/producer-stream.ts";
+
+/** Module-level alias of {@link KafkaConsumer.createReadStream} (upstream export). */
+export function createReadStream(
+  conf: ClientConfig,
+  topicConf: ClientConfig | undefined,
+  streamOptions: ReadStreamOptions | number,
+): ConsumerStream {
+  return KafkaConsumer.createReadStream(conf, topicConf, streamOptions);
+}
+
+/** Module-level alias of {@link Producer.createWriteStream} (upstream export). */
+export function createWriteStream(
+  conf: ClientConfig,
+  topicConf: ClientConfig | undefined,
+  streamOptions: WriteStreamOptions | string,
+): ProducerStream {
+  return Producer.createWriteStream(conf, topicConf, streamOptions);
+}
