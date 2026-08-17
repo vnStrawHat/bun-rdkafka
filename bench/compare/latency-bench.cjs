@@ -10,6 +10,7 @@ const {
   BROKERS = "localhost:9092",
   RATE = "10000",
   DURATION_S = "20",
+  CONSUMER_EXTRA = "{}", // extra consumer conf (JSON), e.g. {"js.consume.prefetch":true}
 } = process.env;
 
 const lib = require(LIB);
@@ -37,6 +38,7 @@ const consumer = new KafkaConsumer(
     "fetch.wait.max.ms": 5,
     "topic.metadata.refresh.interval.ms": 2000,
     "log.connection.close": false,
+    ...JSON.parse(CONSUMER_EXTRA),
   },
   { "auto.offset.reset": "latest" },
 );

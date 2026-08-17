@@ -318,3 +318,74 @@ Notes versus the earlier sessions:
   verdict is unchanged (MET in 4/6 cases).
 
 Repro: `bun bench/compare/run.ts` (full run, ~25 minutes on this box).
+
+---
+
+## Consumer prefetch thread (experiment, `js.consume.prefetch`) — 2026-08-17
+
+Measures the shim-side prefetch thread described in
+[docs/notes/consumer-prefetch-thread.md](../docs/notes/consumer-prefetch-thread.md):
+a thread inside `libbunrdkafka` pre-serializes MESSAGE BATCH frames (≤ 500
+messages, ≤ `js.consume.buffer.bytes` each) into a ring of 4 frames, and
+`brk_consume_batch` from JS becomes a memcpy of one ready frame. Opt-in, off by
+default; producer path unchanged.
+
+### Environment & methodology
+
+Same as §M6 / "Final consolidated run" (4 vCPU / 3.8 GB, broker co-located,
+apache/kafka:3.9.0 recreated clean earlier the same day, Bun 1.4.0-canary.1,
+librdkafka 2.15.0 static; upstream @confluentinc/kafka-javascript 1.10.0 on
+Node v24.15.0; shared librdkafka config incl. consumer
+`fetch.queue.backoff.ms=10`; 3-run medians, 100k warmup + 500k measured;
+latency 10k msg/s, 5 s warmup + 20 s measured). One harness change: `run.ts`
+now deletes each bench topic after its case (`delTopic`) so a full run no
+longer fills the broker's disk. Repro: `bun bench/compare/run.ts --prefetch`
+(raw numbers in `bench/compare/results.json`).
+
+### Results (median of 3)
+
+| Case | bun-rdkafka / Bun (default) | bun-rdkafka / Bun **+ prefetch thread** | upstream / Node 24 | prefetch ÷ default | prefetch ÷ upstream |
+|---|---:|---:|---:|---:|---:|
+| consumer 100B | 997,499 msg/s | **1,256,128 msg/s** | 411,091 | **1.26×** | **3.06×** |
+| consumer 1KB | 677,664 | **863,998** | 278,685 | **1.28×** | **3.10×** |
+| e2e latency p50/p99 @10k msg/s | 4 / 6 ms | 4 / 6 ms | 2 / 3 ms | = | — |
+| producer 100B acks=1 | 1,084,103 | (n/a — producer path unchanged) | 743,556 | — | 1.46× (default) |
+| producer 100B acks=all | 1,028,990 | | 727,555 | — | 1.41× |
+| producer 1KB acks=1 | 592,906 | | 590,276 | — | 1.00× |
+| producer 1KB acks=all | 648,041 | | 660,349 | — | 0.98× |
+
+CPU of the consuming process (single run each, 600k messages, offsets checked
+0…599,999 monotonic, no duplicates or gaps in both modes):
+
+| payload | default | + prefetch thread |
+|---|---:|---:|
+| 100 B | 1,029,049 msg/s @ **102 %** of a core | 1,362,147 msg/s @ **135 %** |
+| 1 KiB | 685,199 msg/s @ 123 % | 909,536 msg/s @ 162 % |
+
+### Analysis
+
+- **+26–33 % consumer throughput for +33–40 % CPU** — the parallelism buys
+  almost exactly what the profile in the note predicted (FFI share of the wall
+  clock was 25–30 %, so the ceiling was ~1.3–1.4×). Per core it is a wash; it
+  is a win when there is an idle core, which is the common deployment.
+- **Latency unchanged** (p50 4 ms / p99 6 ms): the frame is handed over as
+  soon as it is filled (the thread polls with a 100 ms timeout but returns on
+  the first message), and the JS side still polls on the same PollScheduler
+  cadence — the pull-model timer, not the thread, sets the floor.
+- **The remaining consume cost is JS-side** (`BatchDecoder` + per-message
+  routing/`data` emit ≈ 70 % of wall at 100 B). That is where the next step
+  is, independent of threading.
+- **Producer 1KB at parity with upstream this session** (1.00× / 0.98×, versus
+  0.63–0.81× in the earlier sessions). Nothing changed in the producer path
+  today; what changed is the environment: broker recreated clean and topics
+  deleted between cases, i.e. a broker with a near-empty log dir and a
+  non-full disk. This supports the §M6d reading that the earlier 1KB deficit
+  was environmental noise on this box rather than a client-side cost.
+
+### Verdict
+
+Keep as an **opt-in experiment**. Correctness holds for the flowing path
+(2000-message integration test with rebalance events + clean disconnect;
+600k-message offset checks). Before it can become a default: drop/re-seek
+prefetched frames on seek/pause/revoke (see the note's "Semantics" section),
+and a Windows CI build of the thread primitives.

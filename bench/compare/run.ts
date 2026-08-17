@@ -25,6 +25,10 @@ interface Row {
   cmd: string[];
   lib: string;
   available: boolean;
+  /** extra env for the bench scripts (e.g. CONSUMER_EXTRA) */
+  env?: Record<string, string>;
+  /** consumer-side variant only: skip the producer cases (identical code path) */
+  consumerOnly?: boolean;
 }
 
 function probe(cmd: string[], lib: string): boolean {
@@ -38,14 +42,27 @@ function probe(cmd: string[], lib: string): boolean {
 // Compared against upstream on Node only (user decision, 2026-08-14):
 // confluent-kafka-javascript does not run on Bun 1.4 — prebuilts stop at
 // NODE_MODULE_VERSION 137 (Node 24) while Bun 1.4 requires 147.
+// --prefetch: add a third row running our consumer with the experimental
+// shim-side prefetch thread (docs/notes/consumer-prefetch-thread.md).
+const WITH_PREFETCH = process.argv.includes("--prefetch");
 const rows: Row[] = [
   { name: "bun-rdkafka / Bun", cmd: ["bun"], lib: OURS, available: true },
+  ...(WITH_PREFETCH
+    ? [{
+        name: "bun-rdkafka / Bun (js.consume.prefetch)",
+        cmd: ["bun"],
+        lib: OURS,
+        available: true,
+        env: { CONSUMER_EXTRA: JSON.stringify({ "js.consume.prefetch": true }) },
+        consumerOnly: true,
+      } satisfies Row]
+    : []),
   { name: "confluent-kafka-js / Node 24", cmd: [NODE], lib: UPSTREAM, available: probe([NODE], UPSTREAM) },
 ];
 
 function runOnce(script: string, row: Row, extraEnv: Record<string, string>): Record<string, number> | null {
   const r = spawnSync(row.cmd[0]!, [...row.cmd.slice(1), `${ROOT}/bench/compare/${script}`], {
-    env: { ...process.env, LIB: row.lib, BROKERS, N, WARMUP, ...extraEnv },
+    env: { ...process.env, LIB: row.lib, BROKERS, N, WARMUP, ...(row.env ?? {}), ...extraEnv },
     timeout: 240000,
   });
   const lines = (r.stdout?.toString() ?? "").trim().split("\n");
@@ -59,6 +76,19 @@ function runOnce(script: string, row: Row, extraEnv: Record<string, string>): Re
   }
   console.error(`  FAIL ${row.name}: ${r.stderr?.toString().split("\n").slice(-3).join(" | ")}`);
   return null;
+}
+
+/**
+ * Best-effort topic cleanup between cases so a full run does not fill the
+ * broker's disk (a 1KB producer case writes ~600 MB per run and the test
+ * broker has no size-based retention). No-op when the docker test container
+ * is not there (external broker).
+ */
+function delTopic(topic: string): void {
+  spawnSync("docker", [
+    "exec", "bun-rdkafka-test-kafka", "/opt/kafka/bin/kafka-topics.sh",
+    "--bootstrap-server", "localhost:9092", "--delete", "--topic", topic,
+  ], { timeout: 60000 });
 }
 
 function median(xs: number[]): number {
@@ -89,7 +119,7 @@ for (const size of ["100", "1024"]) {
     console.log(`\n== ${caseName} ==`);
     summary[caseName] = {};
     for (const row of rows) {
-      if (!row.available) {
+      if (!row.available || row.consumerOnly) {
         summary[caseName][row.name] = null;
         continue;
       }
@@ -100,6 +130,7 @@ for (const size of ["100", "1024"]) {
         { TOPIC: topic, SIZE: size, ACKS: acks },
         "msgs_per_s",
       );
+      delTopic(topic);
     }
   }
 }
@@ -117,6 +148,7 @@ for (const size of PRODUCER_ONLY ? [] : ["100", "1024"]) {
       ? bench("consumer-bench.cjs", row, { TOPIC: topic }, "msgs_per_s")
       : null;
   }
+  delTopic(topic);
 }
 
 // Latency: 100B acks=1, 10k msg/s
@@ -125,7 +157,7 @@ if (!PRODUCER_ONLY) {
   console.log(`\n== ${caseName} ==`);
   summary[caseName] = {};
   for (const row of rows) {
-    const topic = `bench-l-${row.lib === OURS ? "ours" : row.cmd[0] === "bun" ? "upb" : "upn"}`;
+    const topic = `bench-l-${row.lib === OURS ? (row.consumerOnly ? "ours-pf" : "ours") : row.cmd[0] === "bun" ? "upb" : "upn"}`;
     summary[caseName][row.name] = row.available
       ? bench("latency-bench.cjs", row, { TOPIC: topic, DURATION_S: QUICK ? "5" : "20" }, "p99_ms")
       : null;

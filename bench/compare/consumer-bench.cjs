@@ -10,6 +10,7 @@ const {
   N = "500000",
   WARMUP = "100000",
   BROKERS = "localhost:9092",
+  CONSUMER_EXTRA = "{}", // extra consumer conf (JSON), e.g. {"js.consume.prefetch":true}
 } = process.env;
 
 const lib = require(LIB);
@@ -25,6 +26,7 @@ const consumer = new KafkaConsumer(
     "enable.auto.commit": false,
     "fetch.queue.backoff.ms": 10,
     "log.connection.close": false,
+    ...JSON.parse(CONSUMER_EXTRA),
   },
   { "auto.offset.reset": "earliest" },
 );
