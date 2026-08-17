@@ -167,9 +167,12 @@ describe("state machine INIT → CONNECTING → READY → DISCONNECTING → CLOS
       orphan.connect();
     })();
 
-    for (let i = 0; i < 20 && leaked.length === 0; i++) {
+    // Finalizers run on the GC's schedule: under load (the full suite in one
+    // process, a large heap) a few forced collections are not always enough,
+    // so allow up to ~2 s before calling it a leak-detection failure.
+    for (let i = 0; i < 200 && leaked.length === 0; i++) {
       Bun.gc(true);
-      await Bun.sleep(1);
+      await Bun.sleep(10);
     }
 
     expect(leaked).toEqual(["OrphanProducer"]);
