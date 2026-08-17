@@ -223,11 +223,54 @@ Honest caveats:
 
 Prebuilt binaries for the two Tier-1 targets are built by CI and attached to every [GitHub Release](https://github.com/vnStrawHat/bun-rdkafka/releases); the postinstall script picks the matching one (see [Install](#install)). On every other platform the installer falls back to the source build automatically — you need `cmake` and a C compiler; librdkafka is fetched and statically linked during the build. Contributions of prebuilt matrix entries (arm64/darwin) are welcome once we have CI runners to test them.
 
+## Configuration: `js.*` options
+
+Configuration is librdkafka's own property set, passed through unmodified (see the
+[librdkafka configuration reference](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md)).
+On top of that, bun-rdkafka accepts a small set of `js.*` keys — passed in the same
+config object — that tune the TypeScript layer (poll scheduling, buffers, backpressure).
+They are never forwarded to librdkafka; unknown `js.*` keys are rejected at construction.
+
+All of it is typed: `new Producer(conf, topicConf?)` takes `ProducerConfig` / `ProducerTopicConfig`,
+`new KafkaConsumer(...)` takes `KafkaConsumerConfig` / `ConsumerTopicConfig`, and
+`AdminClient.create(...)` takes `AdminClientConfig` — every librdkafka property (generated from
+librdkafka's `CONFIGURATION.md`, with its description, default and range as hover docs), the `js.*`
+keys below, and the callback properties (`dr_cb`, `rebalance_cb`, …), so editors complete keys and
+flag typos or out-of-range enum values. The KafkaJS namespace is typed the same way — `new
+Kafka(config)` / `kafka.producer(config)` / `kafka.consumer(config)` / `kafka.admin(config)`
+take `CommonConstructorConfig` / `ProducerConstructorConfig` / `ConsumerConstructorConfig` /
+`AdminConstructorConfig` (upstream's names): the librdkafka pass-through keys plus a typed
+`kafkaJS` block (`KafkaConfig` / `ProducerConfig` / `ConsumerConfig` / `AdminConfig`). Event names
+are typed too: `client.on("…")` completes the events of that client and types the listener's
+parameters.
+
+| Key | Default | What it does | Recommended |
+|---|---|---|---|
+| `js.poll.idle.max.ms` | `50` | Ceiling of the adaptive poll backoff when a client is idle. When there is data the client polls continuously; when data runs out it backs off 1 → 2 → 4 … up to this value. It is therefore the **worst-case added latency** for a message arriving on an idle consumer, and for rebalance / offset-commit / delivery-report delivery. | Keep `50` for throughput-oriented workloads. Set `5`–`10` for latency-sensitive consumers (costs a little idle CPU). |
+| `js.poll.interval.ms` | `500` | Poll interval while a client is *cold* (no subscription/assignment and no in-flight produce): only picks up log/stats/error events. The timer is `unref`'d, so an idle client never keeps the process alive. | Keep the default. Lower only if you need faster `event.stats`/`event.log` while idle. |
+| `js.consume.buffer.bytes` | `4194304` (4 MiB) | Size of the reusable buffer one `brk_consume_batch` FFI call fills (up to 500 messages per call). It grows automatically if a single message does not fit, so this is a performance knob, not a limit. | Keep the default. Raise (e.g. `16777216`) if your messages are ≥ 1 MiB so batches stay full; lower (e.g. `262144`) to save memory on many small consumers. |
+| `js.event.buffer.bytes` | `262144` (256 KiB) | Size of the reusable buffer for the event drain (`brk_events_poll`): delivery reports, rebalance/commit events, stats JSON. Grows automatically when a frame does not fit. | Keep the default. Raise if you enable `statistics.interval.ms` with many topics/partitions (the stats JSON can reach several hundred KiB). |
+| `js.producer.max.pending` | = `queue.buffering.max.messages` (librdkafka default `100000`) | Backpressure threshold of the producer's delivery ledger — the number of produced messages still waiting for a delivery report. Beyond it `produce()` throws `ERR__QUEUE_FULL` synchronously (same as upstream), so you can `poll()` and retry. | Leave it tied to `queue.buffering.max.messages`. Lower both (e.g. `65536`) for large payloads to bound memory and keep the pipeline flowing. |
+| `js.consumer.max.batch.size` | `32` | KafkaJS API only: the maximum number of messages handed to one `eachBatch` call. `eachMessage` is unaffected. | `32` is a good default; raise (`100`–`500`) when your batch handler amortizes work (bulk writes), lower for tighter per-message latency. |
+| `js.consume.prefetch` | `false` | **Experimental.** Serializes consume batches on a shim-owned thread so the JS thread only decodes and emits. Measured +26–33 % consumer throughput on a machine with an idle core, at +33–40 % CPU (see `bench/RESULTS.md`, "Consumer prefetch thread"). Prefetched frames are still delivered after `seek`/`pause`/revoke — see [docs/notes/consumer-prefetch-thread.md](./docs/notes/consumer-prefetch-thread.md) before enabling. | Off by default. Try `true` for high-throughput flowing consumers on ≥ 2 cores when you commit from your handler (`enable.auto.commit=false`). |
+| `js.consume.prefetch.frames` | `4` | Ring depth of the prefetch thread: how many `js.consume.buffer.bytes` frames may be filled ahead of the JS thread. | Keep `4`. More frames only add prefetch depth (memory + at-least-once exposure), not throughput. |
+| `js.consumer.zero.copy` | `false` | Reserved for returning message `value`/`key` as views into the consume buffer instead of copies. **Not yet effective** — messages are always copied today. | Leave unset. |
+| `js.poll.worker` | `false` | Reserved for a Worker-based blocking poll mode (design §5.2). **Not yet effective.** The `js.consume.prefetch` experiment above is the shim-side realisation of the same idea. | Leave unset. |
+
+Two librdkafka properties are worth calling out because bun-rdkafka's fast drain
+changes their impact (both keep librdkafka's defaults to preserve upstream semantics):
+
+- **`fetch.queue.backoff.ms`** (librdkafka default `1000`): how long librdkafka waits before
+  refetching after its local queue was full. bun-rdkafka drains that queue much faster than
+  N-API clients, so the default can cost >10× consumer throughput. **Recommended: `10`.**
+- **`queue.buffering.max.messages`** (librdkafka default `100000`): also drives
+  `js.producer.max.pending` (above).
+
 ## Tuning notes
 
-- **Consumers: set `fetch.queue.backoff.ms` to a small value (e.g. `10`).** librdkafka's default of 1000 ms throttles refetching when the local queue was recently full; because bun-rdkafka drains very fast, the default can cost >10× consumer throughput. We keep librdkafka's default to preserve upstream semantics, so this is opt-in.
-- `js.poll.idle.max.ms` (default 50) caps the poll backoff when idle — it is also the worst-case latency for a message arriving on an idle consumer, and for rebalance/offset-commit delivery. Lower it for latency-sensitive consumers at a small idle-CPU cost.
-- Additional `js.*` options (staging, buffer sizes, batch sizes) are documented in the API docs (`bun run docs:api`).
+- **Consumers: set `fetch.queue.backoff.ms=10`** — the single most important knob (see the note under [Configuration](#configuration-js-options); librdkafka's default of 1000 ms can cost >10× throughput with bun-rdkafka's fast drain).
+- **Latency-sensitive consumers: lower `js.poll.idle.max.ms`** (e.g. `5`–`10`) — it bounds the added latency on an idle consumer at a small idle-CPU cost.
+- **High-throughput flowing consumers on ≥ 2 cores:** try the experimental `js.consume.prefetch=true`.
 
 ## Architecture
 
