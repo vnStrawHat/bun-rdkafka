@@ -125,6 +125,8 @@ export const brkSymbols = {
   brk_pause_resume: { args: ["ptr", "ptr", "i32", "i32"], returns: "i32" },
   /** `int32_t brk_offsets_store(void *h, const uint8_t *tpl_buf, int32_t len)` */
   brk_offsets_store: { args: ["ptr", "ptr", "i32"], returns: "i32" },
+  /** `int32_t brk_offset_store_single(void *h, int32_t topic_id, int32_t partition, int64_t offset, int32_t leader_epoch)` */
+  brk_offset_store_single: { args: ["ptr", "i32", "i32", "i64", "i32"], returns: "i32" },
   /**
    * `int32_t brk_query_watermark(void *h, const char *topic, int32_t partition,
    *                              int64_t *lo, int64_t *hi, int32_t timeout_ms)`

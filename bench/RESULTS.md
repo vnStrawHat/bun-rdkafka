@@ -429,6 +429,14 @@ session's scratchpad and confirmed by the full run below):
    100 ms before backing off exponentially (`idleHoldMs`), so steady traffic is
    never met by a 2–8 ms timer.
 
+8. KafkaJS `eachMessage`: the per-message `offsetsStore` went through a tpl
+   encode (JS) → tpl decode + list alloc (C) → `rd_kafka_offsets_store` and
+   showed up as 13 % of the JS thread. New `brk_offset_store_single(topic_id,
+   partition, offset, leader_epoch)` reuses one cached list on the C side;
+   `NativeClient.offsetsStore` takes it for a single already-interned
+   partition. `eachMessage` 960k → 1.28–1.32 M msg/s at 100 B (`eachBatch`
+   1.33 M; callback flowing mode 1.59 M).
+
 JS-side cost per message (micro-benchmark, decode + convert + queue + emit):
 100 B 370 ns → 135 ns; 1 KiB 370 ns → ~250 ns.
 

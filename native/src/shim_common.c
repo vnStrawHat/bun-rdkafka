@@ -307,6 +307,13 @@ BRK_EXPORT void brk_client_destroy(void *hv) {
   if (h->type == BRK_CLIENT_CONSUMER) {
     /* The prefetch thread (if any) polls consumer_q — stop it before close. */
     brk_consume_prefetch_teardown(h);
+    /* store_tpl caches a toppar reference (rd_kafka_offsets_store attaches
+     * it): drop it BEFORE close/destroy, or rd_kafka_destroy waits forever
+     * for the refcount. */
+    if (h->store_tpl != NULL) {
+      rd_kafka_topic_partition_list_destroy(h->store_tpl);
+      h->store_tpl = NULL;
+    }
     /* Close via a dedicated queue: answer the rebalance (revoke) that arises
      * during close right here with assign(NULL)/incremental_unassign. */
     rd_kafka_queue_t *cq = rd_kafka_queue_new(h->rk);

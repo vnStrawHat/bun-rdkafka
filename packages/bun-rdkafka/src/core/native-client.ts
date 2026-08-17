@@ -41,6 +41,7 @@ import { loadNative, type BrkNative } from "../ffi/loader.ts";
 import {
   BRK_ASSIGN,
   BRK_CLIENT_CONSUMER,
+  NO_LEADER_EPOCH,
   BRK_CLIENT_PRODUCER,
   BRK_ERR_BUFFER_TOO_SMALL,
   BRK_ERR_INVALID_HANDLE,
@@ -765,9 +766,36 @@ export class NativeClient {
     );
   }
 
-  /** `brk_offsets_store` — workflow `enable.auto.offset.store=false`. */
+  /**
+   * `brk_offsets_store` — workflow `enable.auto.offset.store=false`.
+   * A single partition of an already-interned topic (the per-message store of
+   * the KafkaJS `eachMessage` loop) takes `brk_offset_store_single`: no tpl
+   * encode/decode, no list allocation on either side.
+   */
   offsetsStore(partitions: readonly TopicPartitionInput[]): void {
     const handle = this.assertType(BRK_CLIENT_CONSUMER, "offsetsStore");
+    if (partitions.length === 1) {
+      const p = partitions[0] as TopicPartitionInput;
+      const topicId =
+        p.topicId !== undefined && p.topicId >= 0
+          ? p.topicId
+          : p.topic !== undefined
+            ? this.topics.idOf(p.topic)
+            : undefined;
+      if (topicId !== undefined && p.offset !== undefined && (p.metadata ?? null) === null) {
+        this.check(
+          this.native.brk_offset_store_single(
+            handle,
+            topicId,
+            p.partition,
+            p.offset,
+            p.leaderEpoch ?? NO_LEADER_EPOCH,
+          ),
+          "brk_offset_store_single",
+        );
+        return;
+      }
+    }
     const tpl = this.encodeTplPayload(partitions);
     this.check(this.native.brk_offsets_store(handle, tpl, tpl.length), "brk_offsets_store");
   }

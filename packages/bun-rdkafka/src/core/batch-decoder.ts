@@ -57,6 +57,8 @@ export type TopicNameFetcher = (topicId: number) => string;
  */
 export class TopicNameTable {
   private readonly names = new Map<number, string>();
+  /** Reverse index (`name → id`) for hot paths addressed by name. */
+  private readonly ids = new Map<string, number>();
   private readonly fetcher: TopicNameFetcher | undefined;
 
   constructor(fetcher?: TopicNameFetcher) {
@@ -76,11 +78,20 @@ export class TopicNameTable {
   }
 
   set(topicId: number, name: string): void {
-    if (topicId >= 0) this.names.set(topicId, name);
+    if (topicId >= 0) {
+      this.names.set(topicId, name);
+      this.ids.set(name, topicId);
+    }
+  }
+
+  /** Interned id of `name`, or `undefined` when the topic has not been seen. */
+  idOf(name: string): number | undefined {
+    return this.ids.get(name);
   }
 
   clear(): void {
     this.names.clear();
+    this.ids.clear();
   }
 
   /**
@@ -98,7 +109,7 @@ export class TopicNameTable {
       );
     }
     const name = fn(topicId);
-    this.names.set(topicId, name);
+    this.set(topicId, name);
     return name;
   }
 }

@@ -374,6 +374,46 @@ describe("reusable buffers: growing per brk_last_required_size + one retry", () 
     expect(str(msgs[0]!.value)).toBe("hi");
   });
 
+  test("offsetsStore: single interned partition takes brk_offset_store_single, otherwise the tpl path", () => {
+    const single: unknown[][] = [];
+    let tplCalls = 0;
+    const fake = fakeNative({
+      brk_offset_store_single: (...args: unknown[]) => {
+        single.push(args.slice(1));
+        return 0;
+      },
+      brk_offsets_store: () => {
+        tplCalls++;
+        return 0;
+      },
+    });
+    const client = new NativeClient({
+      type: BRK_CLIENT_CONSUMER,
+      properties: [],
+      native: fake.native,
+      onLeak: () => {},
+    });
+    client.connect();
+    client.topics.set(3, "orders");
+
+    client.offsetsStore([{ topic: "orders", partition: 1, offset: 42, leaderEpoch: 7 }]);
+    client.offsetsStore([{ topicId: 3, partition: 2, offset: 43 }]);
+    expect(single).toEqual([
+      [3, 1, 42, 7],
+      [3, 2, 43, -1],
+    ]);
+    expect(tplCalls).toBe(0);
+
+    client.offsetsStore([{ topic: "unknown-topic", partition: 0, offset: 1 }]); // not interned
+    client.offsetsStore([{ topic: "orders", partition: 0, offset: 1, metadata: "m" }]); // metadata
+    client.offsetsStore([
+      { topic: "orders", partition: 0, offset: 1 },
+      { topic: "orders", partition: 1, offset: 2 },
+    ]); // several
+    expect(tplCalls).toBe(3);
+    expect(single).toHaveLength(2);
+  });
+
   test("consumeBatch retires its buffer: earlier messages survive later batches", () => {
     const batchA = encodeMessageBatch([
       { topicId: 0, partition: 0, offset: 1, timestampMs: 5, timestampType: 1, err: 0, key: "k1", value: "first" },

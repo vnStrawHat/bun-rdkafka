@@ -410,6 +410,13 @@ BRK_EXPORT int32_t brk_pause_resume(void *h, const uint8_t *tpl_buf,
  * workflow). */
 BRK_EXPORT int32_t brk_offsets_store(void *h, const uint8_t *tpl_buf,
                                      int32_t len);
+/* Same for ONE partition, addressed by interned topic_id (format 4), without
+ * a tpl round-trip — the per-message hot path of the KafkaJS eachMessage
+ * loop. leader_epoch -1 = unknown. Errors: BRK_ERR_UNKNOWN_TOPIC_ID or the
+ * rd_kafka_offsets_store error. */
+BRK_EXPORT int32_t brk_offset_store_single(void *h, int32_t topic_id,
+                                           int32_t partition, int64_t offset,
+                                           int32_t leader_epoch);
 
 /* Watermarks: query = ask the broker (blocks up to timeout); get = local
  * cache. */

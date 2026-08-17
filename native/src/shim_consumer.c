@@ -801,6 +801,45 @@ BRK_EXPORT int32_t brk_offsets_store(void *hv, const uint8_t *tpl_buf,
   return ret;
 }
 
+BRK_EXPORT int32_t brk_offset_store_single(void *hv, int32_t topic_id,
+                                           int32_t partition, int64_t offset,
+                                           int32_t leader_epoch) {
+  brk_handle *h = brk_check(hv);
+  if (h == NULL) return BRK_ERR_INVALID_HANDLE;
+  if (h->type != BRK_CLIENT_CONSUMER) return BRK_ERR_INVALID_STATE;
+  brk_mutex_lock(&h->mu);
+  if (topic_id < 0 || topic_id >= h->topics.count) {
+    brk_mutex_unlock(&h->mu);
+    return BRK_ERR_UNKNOWN_TOPIC_ID;
+  }
+  /* Interned names are strdup'ed once and live until destroy: the pointer
+   * stays valid after the unlock. */
+  const char *name = h->topics.names[topic_id];
+  brk_mutex_unlock(&h->mu);
+
+  /* The cached list is reused only for the SAME (topic, partition):
+   * rd_kafka_offsets_store attaches the toppar to the element (_private) and
+   * later calls trust it, so an element must never be re-pointed at another
+   * partition. Consecutive stores are almost always the same partition. */
+  rd_kafka_topic_partition_list_t *tpl = h->store_tpl;
+  if (tpl == NULL || tpl->cnt != 1 || tpl->elems[0].partition != partition ||
+      strcmp(tpl->elems[0].topic, name) != 0) {
+    if (tpl != NULL) rd_kafka_topic_partition_list_destroy(tpl);
+    tpl = rd_kafka_topic_partition_list_new(1);
+    if (tpl == NULL) return BRK_ERR_NOMEM;
+    rd_kafka_topic_partition_list_add(tpl, name, partition);
+    h->store_tpl = tpl;
+  }
+  rd_kafka_topic_partition_t *e = &tpl->elems[0];
+  e->offset = offset;
+  e->err = RD_KAFKA_RESP_ERR_NO_ERROR;
+  rd_kafka_topic_partition_set_leader_epoch(e, leader_epoch);
+  rd_kafka_resp_err_t err = rd_kafka_offsets_store(h->rk, tpl);
+  if (err != RD_KAFKA_RESP_ERR_NO_ERROR) return BRK_KAFKA_ERR(err);
+  if (e->err != RD_KAFKA_RESP_ERR_NO_ERROR) return BRK_KAFKA_ERR(e->err);
+  return BRK_OK;
+}
+
 BRK_EXPORT int32_t brk_query_watermark(void *hv, const char *topic,
                                        int32_t partition, int64_t *lo,
                                        int64_t *hi, int32_t timeout_ms) {

@@ -115,6 +115,45 @@ describe.skipIf(!available)("KafkaJS Consumer (real broker)", () => {
   );
 
   test(
+    "eachMessage stores offsets per partition (single-partition store fast path): committed == consumed on every partition",
+    async () => {
+      const topic = t("store");
+      const group = t("g-store");
+      await createTopic(topic, 3);
+      await produceTo(topic, 25, 3);
+
+      const consumer = track(newConsumer(group));
+      await consumer.connect();
+      await consumer.subscribe({ topics: [topic] });
+      let total = 0;
+      // Interleaved partitions → consecutive stores alternate partitions.
+      await consumer.run({
+        partitionsConsumedConcurrently: 3,
+        eachMessage: async () => {
+          total++;
+        },
+      });
+      await until(() => total === 75, 60_000, "all 75 messages");
+      await consumer.disconnect(); // commits the stored offsets
+
+      const check = track(newConsumer(group));
+      await check.connect();
+      const committed = await check.committed(
+        [0, 1, 2].map((partition) => ({ topic, partition })),
+      );
+      expect(
+        committed.map((c) => ({ partition: c.partition, offset: c.offset })).sort((a, b) => a.partition - b.partition),
+      ).toEqual([
+        { partition: 0, offset: "25" },
+        { partition: 1, offset: "25" },
+        { partition: 2, offset: "25" },
+      ]);
+      await check.disconnect();
+    },
+    90_000,
+  );
+
+  test(
     "pause() from inside eachMessage + resume: the in-flight message redelivered, nothing lost/duplicated after resume",
     async () => {
       const topic = t("pause");

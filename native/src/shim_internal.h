@@ -129,6 +129,8 @@ typedef struct brk_handle {
   uint8_t *cscratch;
   int32_t cscratch_cap;
   brk_prefetch pf;
+  /* Reused 1-element list for brk_offset_store_single (JS thread only). */
+  rd_kafka_topic_partition_list_t *store_tpl;
 } brk_handle;
 
 /* ---- shared helpers (defined in shim_common.c) ---------------------------- */
