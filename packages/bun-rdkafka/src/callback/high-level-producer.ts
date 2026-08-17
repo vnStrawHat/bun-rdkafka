@@ -6,7 +6,11 @@
  * `produce(topic, partition, message, key, timestamp, [headers,] callback)`
  * with a per-message `(err, offset)` delivery callback, plus
  * `setKeySerializer`/`setValueSerializer` (sync, Promise, or callback-style
- * `fn(value, cb)` when the function declares 2 parameters).
+ * `fn(value, cb)` when the function declares 2 parameters) and their
+ * topic-aware variants `setTopicKeySerializer`/`setTopicValueSerializer`
+ * (`fn(topic, value[, cb])`, callback-style when it declares 3 parameters).
+ * Like upstream there is ONE key slot and ONE value slot: whichever setter
+ * was called last wins.
  *
  * Per-message correlation reuses the {@link DeliveryLedger} directly through
  * `Producer.produceInternal` (opaque_id) — no separate mechanism needed.
@@ -34,18 +38,37 @@ export type Serializer = (
   cb?: (err: Error | null, result?: ProduceValue) => void,
 ) => unknown;
 
+/**
+ * Upstream's topic serializer: same three styles, with the topic name first
+ * (`fn(topic, value)` / `fn(topic, value, cb)`).
+ */
+export type TopicSerializer = (
+  topic: string,
+  value: unknown,
+  cb?: (err: Error | null, result?: ProduceValue) => void,
+) => unknown;
+
 const identitySerializer: Serializer = (value) => value as ProduceValue;
+
+/** A configured serializer slot: plain or topic-aware (upstream's `needsTopic`). */
+type SerializerSlot =
+  | { needsTopic: false; fn: Serializer }
+  | { needsTopic: true; fn: TopicSerializer };
 
 /** Runs a serializer in any of the three styles upstream supports. */
 function runSerializer(
-  fn: Serializer,
+  slot: SerializerSlot,
+  topic: string,
   value: unknown,
   done: (err: Error | null, result?: ProduceValue) => void,
 ): void {
-  if (fn.length === 2) {
-    // Callback-style.
+  // Callback-style: declares (value, cb) or (topic, value, cb).
+  const callbackStyle = slot.needsTopic ? slot.fn.length === 3 : slot.fn.length === 2;
+  if (callbackStyle) {
     try {
-      fn(value, (err, result) => done(err, result));
+      const cb = (err: Error | null, result?: ProduceValue) => done(err, result);
+      if (slot.needsTopic) slot.fn(topic, value, cb);
+      else slot.fn(value, cb);
     } catch (error) {
       done(error instanceof Error ? error : new Error(String(error)));
     }
@@ -53,7 +76,7 @@ function runSerializer(
   }
   let out: unknown;
   try {
-    out = fn(value);
+    out = slot.needsTopic ? slot.fn(topic, value) : slot.fn(value);
   } catch (error) {
     done(error instanceof Error ? error : new Error(String(error)));
     return;
@@ -69,8 +92,8 @@ function runSerializer(
 }
 
 export class HighLevelProducer extends Producer {
-  private keySerializer: Serializer = identitySerializer;
-  private valueSerializer: Serializer = identitySerializer;
+  private keySerializer: SerializerSlot = { needsTopic: false, fn: identitySerializer };
+  private valueSerializer: SerializerSlot = { needsTopic: false, fn: identitySerializer };
 
   constructor(
     globalConf?: ClientConfig,
@@ -81,12 +104,24 @@ export class HighLevelProducer extends Producer {
   }
 
   setKeySerializer(serializer: Serializer): this {
-    this.keySerializer = serializer;
+    this.keySerializer = { needsTopic: false, fn: serializer };
     return this;
   }
 
   setValueSerializer(serializer: Serializer): this {
-    this.valueSerializer = serializer;
+    this.valueSerializer = { needsTopic: false, fn: serializer };
+    return this;
+  }
+
+  /** Key serializer that also receives the topic name: `fn(topic, key[, cb])`. */
+  setTopicKeySerializer(serializer: TopicSerializer): this {
+    this.keySerializer = { needsTopic: true, fn: serializer };
+    return this;
+  }
+
+  /** Value serializer that also receives the topic name: `fn(topic, value[, cb])`. */
+  setTopicValueSerializer(serializer: TopicSerializer): this {
+    this.valueSerializer = { needsTopic: true, fn: serializer };
     return this;
   }
 
@@ -132,7 +167,7 @@ export class HighLevelProducer extends Producer {
     }
     const callback = cb;
 
-    runSerializer(this.valueSerializer, message, (valueErr, serializedValue) => {
+    runSerializer(this.valueSerializer, topic, message, (valueErr, serializedValue) => {
       if (valueErr) {
         callback(
           LibrdKafkaError.fromKafkaCode(ERROR_CODES.ERR__VALUE_SERIALIZATION, valueErr.message, {
@@ -141,7 +176,7 @@ export class HighLevelProducer extends Producer {
         );
         return;
       }
-      runSerializer(this.keySerializer, key, (keyErr, serializedKey) => {
+      runSerializer(this.keySerializer, topic, key, (keyErr, serializedKey) => {
         if (keyErr) {
           callback(
             LibrdKafkaError.fromKafkaCode(ERROR_CODES.ERR__KEY_SERIALIZATION, keyErr.message, {

@@ -596,6 +596,37 @@ describe("HighLevelProducer", () => {
     await disconnect(producer);
   });
 
+  test("topic serializers receive (topic, value[, cb]) and replace the plain slot (last setter wins)", async () => {
+    const { producer, fake } = makeHlp();
+    producer.setValueSerializer(() => "should-be-replaced");
+    producer.setTopicValueSerializer((topic, v) => `${topic}:${String(v)}`);
+    // Callback-style topic key serializer (3 declared parameters).
+    producer.setTopicKeySerializer((topic, k, cb) => {
+      setTimeout(() => cb!(null, `${topic}/${String(k)}`), 2);
+    });
+    await connect(producer);
+    await new Promise<void>((resolve, reject) => {
+      producer.produce("orders", null, "v1", "k1", Date.now(), (err: LibrdKafkaError | null) =>
+        err ? reject(err) : resolve(),
+      );
+      const feed = () => {
+        const batch = fake.batches[0];
+        if (!batch) {
+          setTimeout(feed, 2);
+          return;
+        }
+        fake.queueDr([
+          { opaqueId: batch[0]!.opaqueId, err: 0, partition: 0, offset: 1, timestampMs: 1 },
+        ]);
+      };
+      feed();
+    });
+    const record = fake.batches[0]![0]!;
+    expect(Buffer.from(record.value!).toString()).toBe("orders:v1");
+    expect(Buffer.from(record.key!).toString()).toBe("orders/k1");
+    await disconnect(producer);
+  });
+
   test("a throwing serializer → cb(ERR__VALUE_SERIALIZATION), no throw", async () => {
     const { producer } = makeHlp();
     producer.setValueSerializer(() => {

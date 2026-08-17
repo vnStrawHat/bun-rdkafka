@@ -143,19 +143,6 @@ export const EXCLUSIONS: readonly Exclusion[] = [
    * 4. Requiring substantial C-shim work (new ABI) — recorded in the plan   *
    * ---------------------------------------------------------------------- */
   {
-    path: "rdkafka:HighLevelProducer.setTopicKeySerializer",
-    reason:
-      "Per-topic serializers: needs a per-topic serializer table + precedence over " +
-      "the global serializer on the hot produce path. FR-1 §4 only commits to " +
-      "setKeySerializer/setValueSerializer.",
-    milestone: "M6",
-  },
-  {
-    path: "rdkafka:HighLevelProducer.setTopicValueSerializer",
-    reason: "Xem rdkafka:HighLevelProducer.setTopicKeySerializer.",
-    milestone: "M6",
-  },
-  {
     path: "kafkajs:Consumer.logger",
     reason:
       "KafkaJS.Consumer does not hold its own Logger yet (Producer/Admin do). Needs " +

@@ -108,6 +108,7 @@ export {
   HighLevelProducer,
   type HlpDeliveryCallback,
   type Serializer,
+  type TopicSerializer,
 } from "./callback/high-level-producer.ts";
 
 // M3 — KafkaConsumer (Callback API)
