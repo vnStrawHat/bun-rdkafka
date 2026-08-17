@@ -10,9 +10,7 @@ import { join } from "node:path";
 import { suffix } from "bun:ffi";
 import {
   SUPPORTED_PLATFORM_KEYS,
-  isNativeLoaded,
   libFileNames,
-  loadedLibPath,
   platformKey,
   resolveLibPath,
 } from "../../packages/bun-rdkafka/src/ffi/loader.ts";
@@ -60,8 +58,26 @@ afterAll(() => {
 
 describe("lazy load", () => {
   test("importing the module does NOT dlopen the library", () => {
-    expect(isNativeLoaded()).toBe(false);
-    expect(loadedLibPath()).toBeUndefined();
+    // Checked in a fresh process: `bun test` shares one process across files, so
+    // when unit and integration suites run together another file has already
+    // loaded native by the time this one runs.
+    const probe = Bun.spawnSync({
+      cmd: [
+        process.execPath,
+        "-e",
+        'const [pkg, loader] = await Promise.all([import(process.argv[1]), import(process.argv[2])]);' +
+          "void pkg; console.log(JSON.stringify({ loaded: loader.isNativeLoaded(), path: loader.loadedLibPath() ?? null }));",
+        join(import.meta.dir, "..", "..", "packages", "bun-rdkafka", "src", "index.ts"),
+        join(import.meta.dir, "..", "..", "packages", "bun-rdkafka", "src", "ffi", "loader.ts"),
+      ],
+      env: Object.fromEntries(
+        Object.entries(process.env).filter(([k, v]) => k !== ENV_KEY && v !== undefined),
+      ) as Record<string, string>,
+    });
+    expect(probe.exitCode).toBe(0);
+    const out = JSON.parse(probe.stdout.toString().trim().split("\n").at(-1) ?? "{}");
+    expect(out.loaded).toBe(false);
+    expect(out.path).toBeNull();
   });
 });
 
