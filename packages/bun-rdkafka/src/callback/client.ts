@@ -16,6 +16,7 @@
  *  - `onEventFrame(ev)` — hook receiving event frames the base does NOT handle
  *    (DR / REBALANCE / OFFSET_COMMIT / OAUTH_REFRESH / ADMIN_RESULT).
  *    The base only wires 4 kinds: ERROR, LOG, STATS, THROTTLE.
+ *  - `onErrorEvent(err)` — ERROR frames as LibrdKafkaError (base: `event.error`).
  *  - `pollTick()`   — called on EVERY poll round after `pollEvents()`; returns
  *    the number of items handled (the consumer `consumeBatch()`s here). Base
  *    returns 0.
@@ -469,6 +470,15 @@ export class Client extends EventEmitter {
   }
 
   /**
+   * Receives every ERROR frame as a `LibrdKafkaError`. The base emits
+   * `event.error`; KafkaConsumer overrides to downgrade some codes to
+   * `warning` in flowing mode (upstream semantics).
+   */
+  protected onErrorEvent(err: LibrdKafkaError): void {
+    this.emit("event.error", err);
+  }
+
+  /**
    * Extra work on each poll round (after `pollEvents()`); returns the number of
    * items handled. KafkaConsumer `consumeBatch()`s here (two-queue constraint).
    */
@@ -533,8 +543,7 @@ export class Client extends EventEmitter {
   private dispatchEvent(event: BrkEvent): void {
     switch (event.type) {
       case BRK_EVENT_ERROR:
-        this.emit(
-          "event.error",
+        this.onErrorEvent(
           LibrdKafkaError.fromKafkaCode(event.code, event.reason || undefined, {
             isFatal: event.isFatal,
             context: "event",

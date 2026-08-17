@@ -545,15 +545,22 @@ export class KafkaConsumer extends Client {
       } satisfies EofEvent);
       return;
     }
-    const err = LibrdKafkaError.fromKafkaCode(m.err, undefined, { context: "consume" });
-    // Upstream (flowing mode): UNKNOWN_TOPIC_OR_PART / TOPIC_AUTHORIZATION_FAILED
-    // are transient — the consumer keeps working and the error reappears on the
-    // next metadata refresh — so they surface as `warning`, not `event.error`.
-    if (this.#flowing && FLOWING_WARNING_CODES.has(m.err)) {
+    this.onErrorEvent(LibrdKafkaError.fromKafkaCode(m.err, undefined, { context: "consume" }));
+  }
+
+  /**
+   * Upstream (flowing mode): UNKNOWN_TOPIC_OR_PART / TOPIC_AUTHORIZATION_FAILED
+   * are transient — the consumer keeps working and the error reappears on the
+   * next metadata refresh — so they surface as `warning`, not `event.error`.
+   * Covers both the consume path (`#route`) and ERROR frames (librdkafka
+   * reports subscription errors as consumer-queue ERROR events).
+   */
+  protected override onErrorEvent(err: LibrdKafkaError): void {
+    if (this.#flowing && FLOWING_WARNING_CODES.has(err.code)) {
       this.emit("warning", err);
       return;
     }
-    this.emit("event.error", err);
+    super.onErrorEvent(err);
   }
 
   /** Serves `consume(n, cb)` requests in FIFO order. */
