@@ -170,10 +170,34 @@ BRK_EXPORT int32_t brk_subscription(void *hv, uint8_t *buf, int32_t cap) {
 /* ========================================================================== */
 
 /* Serializes 1 message (format 4) into scratch; returns bytes or negative. */
-static int32_t serialize_msg(brk_handle *h, const rd_kafka_message_t *m) {
-  int32_t tid = brk_intern_topic(
-      h, m->rkt != NULL ? rd_kafka_topic_name(m->rkt) : "");
-  if (tid < 0) return tid;
+/* Serializes `m` straight into `*out` when the record fits (advances out->off,
+ * *direct = true) — otherwise into cscratch (*direct = false) so the caller
+ * can hold it over to the next call. Either way returns the record length. */
+/* Per-fill cache of the last topic interned: consecutive messages of a fetch
+ * share the same rd_kafka_topic_t, so a pointer compare (plus a strcmp of the
+ * name, in case the topic object was recycled mid-fill) replaces the mutexed
+ * intern-table scan per message. Reset for every consume_fill call. */
+typedef struct {
+  const rd_kafka_topic_t *rkt;
+  int32_t tid;
+  char name[256]; /* topic names are <= 249 bytes */
+} brk_topic_cache;
+
+static int32_t serialize_msg(brk_handle *h, const rd_kafka_message_t *m,
+                             brk_wbuf *out, bool *direct, brk_topic_cache *tc) {
+  int32_t tid;
+  const char *tname = m->rkt != NULL ? rd_kafka_topic_name(m->rkt) : "";
+  if (m->rkt != NULL && m->rkt == tc->rkt && strcmp(tname, tc->name) == 0) {
+    tid = tc->tid;
+  } else {
+    tid = brk_intern_topic(h, tname);
+    if (tid < 0) return tid;
+    if (m->rkt != NULL && strlen(tname) < sizeof(tc->name)) {
+      tc->rkt = m->rkt;
+      tc->tid = tid;
+      strcpy(tc->name, tname);
+    }
+  }
 
   rd_kafka_headers_t *hdrs = NULL;
   size_t hdr_cnt = 0;
@@ -199,9 +223,22 @@ static int32_t serialize_msg(brk_handle *h, const rd_kafka_message_t *m) {
     bound += 2 + (int32_t)strlen(hname) + 4 + (int32_t)hsize;
   }
 
-  uint8_t *s = brk_buf_reserve(&h->cscratch, &h->cscratch_cap, bound);
-  if (s == NULL) return BRK_ERR_NOMEM;
-  brk_wbuf w = {s, bound, 0};
+  brk_wbuf w;
+  if (bound <= out->cap - out->off) {
+    /* Fast path: write in place, no scratch round-trip (saves a memcpy of
+     * the payload per message). */
+    w.p = out->p + out->off;
+    w.cap = bound;
+    w.off = 0;
+    *direct = true;
+  } else {
+    uint8_t *s = brk_buf_reserve(&h->cscratch, &h->cscratch_cap, bound);
+    if (s == NULL) return BRK_ERR_NOMEM;
+    w.p = s;
+    w.cap = bound;
+    w.off = 0;
+    *direct = false;
+  }
 
   rd_kafka_timestamp_type_t tstype = RD_KAFKA_TIMESTAMP_NOT_AVAILABLE;
   int64_t ts = rd_kafka_message_timestamp(m, &tstype);
@@ -233,6 +270,7 @@ static int32_t serialize_msg(brk_handle *h, const rd_kafka_message_t *m) {
     }
   }
   wb_i32(&w, rd_kafka_message_leader_epoch(m));
+  if (*direct) out->off += w.off;
   return w.off;
 }
 
@@ -294,6 +332,7 @@ static int32_t consume_fill(brk_handle *h, uint8_t *buf, int32_t buf_cap,
   brk_wbuf w = {buf, buf_cap, 0};
   *out_len = 0;
   int32_t msgs = 0;
+  brk_topic_cache tc = {NULL, -1, {0}};
 
   /* 0) Message held over from the previous call (out-buf was full then). */
   if (h->pending_msg != NULL) {
@@ -354,11 +393,16 @@ static int32_t consume_fill(brk_handle *h, uint8_t *buf, int32_t buf_cap,
       h->cur_fetch = NULL;
       continue;
     }
-    int32_t n = serialize_msg(h, m);
+    bool direct = false;
+    int32_t n = serialize_msg(h, m, &w, &direct, &tc);
     if (n < 0) {
       brk_set_err(h, n, "serialize message failed");
       *out_len = w.off;
       return msgs > 0 ? msgs : n;
+    }
+    if (direct) {
+      msgs++;
+      continue;
     }
     int32_t e = emit_or_pend(h, &w, n, msgs);
     if (e < 0) return e;
