@@ -41,6 +41,26 @@
  *  - The payload's `pause()`: pauses the partition + seeks to the next
  *    unprocessed offset; a message mid-processing does NOT count as processed
  *    (redelivered after `resume()` — the same mechanism as upstream).
+ *  - `storeOffsets()`: the user's stored offset becomes the partition's
+ *    "next unprocessed" reference (`storedNext`) — pause()/rewind seek there —
+ *    until the scheduler stores again after the next successfully processed
+ *    message (which then takes over, exactly like a `commitOffsets` after a
+ *    manual store would). librdkafka itself keeps only the latest store per
+ *    partition, so the two sources never conflict at commit time.
+ *
+ * ## Rebalance callback (upstream `#rebalanceCallback` semantics)
+ *
+ * This layer installs its own `rebalance_cb` on the callback consumer, so the
+ * callback layer no longer assigns by itself. The user's `rebalance_cb` (from
+ * the config) is awaited as `cb(err, assignment, {assign, unassign,
+ * assignmentLost})`: calling `assignmentFns.assign(x)` uses `x` (EAGER →
+ * assign, COOPERATIVE → incrementalAssign) and skips the default; returning a
+ * truthy alternate assignment uses it (and skips pending seeks); a throwing
+ * user cb is logged and the default behavior continues. Pending seeks are
+ * folded into the assign call as offsets (no separate seek round-trip). The
+ * callback layer emits `rebalance` on the internal client right after the cb
+ * returns — i.e. before the (async) assign lands, unlike upstream (after).
+ * Partition epochs are bumped synchronously on revoke, before any await.
  *
  * ## Deliberate upstream deviations
  *
@@ -54,18 +74,26 @@
 import { Buffer } from "node:buffer";
 import {
   KafkaConsumer,
+  type Assignment as CbAssignment,
   type Message as CbMessage,
   type MessageHeader as CbMessageHeader,
   type TopicPartition as CbTopicPartition,
+  type TopicPartitionOffsetAndMetadata as CbTopicPartitionOffsetAndMetadata,
 } from "../callback/kafka-consumer.ts";
 import type { ClientConfig } from "../core/config.ts";
 import { ERROR_CODES, LibrdKafkaError } from "../core/errors.ts";
 import {
+  createBindingMessageMetadata,
+  loggerTrampoline,
   mapCommonConfig,
   mapConsumerConfig,
+  resolveLogger,
   type CommonRawConfig,
+  type Logger,
+  type LogMessage,
 } from "./config-mapper.ts";
 import { KafkaJSError, fromLibrdKafkaError } from "./errors.ts";
+import { Admin } from "./admin.ts";
 
 /* ========================================================================== */
 /* Public types (KafkaJS shapes)                                               */
@@ -83,6 +111,51 @@ export interface TopicPartition {
   topic: string;
   partition: number;
 }
+
+/** Input of storeOffsets() / result of committed() (KafkaJS shape, string offsets). */
+export interface TopicPartitionOffsetAndMetadata {
+  topic: string;
+  partition: number;
+  offset: string | number;
+  leaderEpoch?: number | null;
+  metadata?: string | null;
+}
+
+/** committed() result entry — always fully populated (upstream shape). */
+export interface CommittedOffset {
+  topic: string;
+  partition: number;
+  offset: string;
+  leaderEpoch: number | null;
+  metadata: string | null;
+}
+
+/**
+ * The third argument of a KafkaJS `rebalance_cb` (upstream `assignmentFns`):
+ * lets the callback take over the (un)assignment for this rebalance.
+ */
+export interface AssignmentFns {
+  /** Assigns exactly `assignment` (EAGER → assign, COOPERATIVE → incrementalAssign) instead of the default. */
+  assign: (assignment: RebalanceAssignment[]) => void;
+  /** Unassigns instead of the default (EAGER → unassign all, COOPERATIVE → incrementalUnassign). */
+  unassign: (assignment: RebalanceAssignment[]) => void;
+  /** Whether the current assignment was lost (session timeout, fenced…). */
+  assignmentLost: () => boolean;
+}
+
+/** An entry of the rebalance assignment — the user may add `offset` before assigning. */
+export interface RebalanceAssignment {
+  topic: string;
+  partition: number;
+  offset?: number;
+  leaderEpoch?: number;
+}
+
+export type RebalanceCallback = (
+  err: LibrdKafkaError,
+  assignment: RebalanceAssignment[],
+  assignmentFns: AssignmentFns,
+) => unknown;
 
 /**
  * Input of pause()/resume(): the KafkaJS shape `{topic, partitions?: number[]}`
@@ -160,7 +233,8 @@ interface MappedConsumerConfig {
   topicConf: ClientConfig;
   autoCommit: boolean;
   maxBatchSize: number;
-  rebalanceCb: ((err: LibrdKafkaError, partitions: CbTopicPartition[]) => void) | undefined;
+  rebalanceCb: RebalanceCallback | undefined;
+  logger: Logger;
 }
 
 /** kafkaJS block → librdkafka props (M5a's mapper) + this layer's own options. */
@@ -172,11 +246,12 @@ function mapConfig(raw: unknown): MappedConsumerConfig {
   const mapped = mapConsumerConfig(rawConfig, mapCommonConfig(rawConfig));
   const conf: ClientConfig = { ...mapped.globalConf };
   const topicConf: ClientConfig = { ...mapped.topicConf };
+  const logger = resolveLogger(rawConfig, mapped);
 
-  // KafkaJS layer: a `rebalance_cb` in the config is a NOTIFICATION for the
-  // user — this layer still assigns itself (unlike the callback layer, where
-  // the user cb must assign; matching upstream _consumer.js semantics). Pulled
-  // out of the conf before it goes down.
+  // KafkaJS layer: a `rebalance_cb` in the config is the user's hook (see the
+  // "Rebalance callback" section at the top) — this layer owns the actual
+  // assign/unassign calls, matching upstream _consumer.js. Pulled out of the
+  // conf; the layer installs its own trampoline in the constructor.
   const rebalanceCb = conf["rebalance_cb"];
   delete conf["rebalance_cb"];
 
@@ -197,10 +272,8 @@ function mapConfig(raw: unknown): MappedConsumerConfig {
     topicConf,
     autoCommit,
     maxBatchSize,
-    rebalanceCb:
-      typeof rebalanceCb === "function"
-        ? (rebalanceCb as MappedConsumerConfig["rebalanceCb"])
-        : undefined,
+    rebalanceCb: typeof rebalanceCb === "function" ? (rebalanceCb as RebalanceCallback) : undefined,
+    logger,
   };
 }
 
@@ -290,15 +363,21 @@ function expandTopicPartitions(
 /* Consumer                                                                    */
 /* ========================================================================== */
 
-/** Internal test option: inject a fake KafkaConsumer. */
+/**
+ * Internal test option: inject a fake KafkaConsumer — either an instance, or a
+ * factory receiving the mapped confs (so a fake can capture the `rebalance_cb`
+ * trampoline this layer installs).
+ */
 export interface ConsumerInternalOptions {
-  inner?: KafkaConsumer;
+  inner?: KafkaConsumer | ((conf: ClientConfig, topicConf: ClientConfig) => KafkaConsumer);
 }
 
 export class Consumer {
   readonly #inner: KafkaConsumer;
   readonly #autoCommit: boolean;
   readonly #maxBatchSize: number;
+  readonly #logger: Logger;
+  readonly #userRebalanceCb: RebalanceCallback | undefined;
 
   #connected = false;
   #running = false;
@@ -328,18 +407,47 @@ export class Consumer {
     const mapped = mapConfig(rawMergedConfig);
     this.#autoCommit = mapped.autoCommit;
     this.#maxBatchSize = mapped.maxBatchSize;
-    this.#inner = internal?.inner ?? new KafkaConsumer(mapped.conf, mapped.topicConf);
-    const userRebalanceCb = mapped.rebalanceCb;
-    this.#inner.on("rebalance", (err: LibrdKafkaError, parts: CbTopicPartition[]) => {
-      this.#onRebalance(err, parts);
-      if (userRebalanceCb !== undefined) {
-        try {
-          userRebalanceCb(err, parts);
-        } catch (error) {
-          console.error("bun-rdkafka: the user's rebalance_cb threw:", error);
-        }
-      }
+    this.#logger = mapped.logger;
+    this.#userRebalanceCb = mapped.rebalanceCb;
+    // This layer owns (un)assignment — see "Rebalance callback" at the top.
+    mapped.conf["rebalance_cb"] = (err: LibrdKafkaError, parts: CbTopicPartition[]) => {
+      this.#rebalanceCallback(err, parts).catch((error: unknown) => {
+        this.#logger.error(`Error from rebalance callback: ${String(error)}`, this.#metadata());
+      });
+    };
+    const injected = internal?.inner;
+    this.#inner =
+      injected === undefined
+        ? new KafkaConsumer(mapped.conf, mapped.topicConf)
+        : typeof injected === "function"
+          ? injected(mapped.conf, mapped.topicConf)
+          : injected;
+    this.#inner.on("event.log", (msg: LogMessage) => loggerTrampoline(msg, this.#logger));
+    this.#inner.on("event.error", (err: LibrdKafkaError) => {
+      this.#logger.error(`Error: ${err.message}`, this.#metadata());
     });
+  }
+
+  #metadata(): object {
+    return createBindingMessageMetadata(this.#inner.name);
+  }
+
+  /** @internal The underlying Callback-API client (null before connect). */
+  _getInternalClient(): KafkaConsumer | null {
+    return this.#connected ? this.#inner : null;
+  }
+
+  /** The logger of this consumer (default logger, or the `kafkaJS.logger` given in the config). */
+  logger(): Logger {
+    return this.#logger;
+  }
+
+  /**
+   * An admin client riding this consumer's connection (the consumer must be
+   * connected before the admin's connect(); shares this consumer's logger).
+   */
+  dependentAdmin(): Admin {
+    return new Admin(null, this);
   }
 
   /* -------------------------------------------------------------- lifecycle */
@@ -353,6 +461,7 @@ export class Consumer {
       });
     });
     this.#connected = true;
+    this.#logger.info("Consumer connected", this.#metadata());
   }
 
   /**
@@ -369,6 +478,7 @@ export class Consumer {
       // A failed disconnect still counts as disconnected — nothing more the user can do.
       this.#inner.disconnect(() => resolve());
     });
+    this.#logger.info("Consumer disconnected", this.#metadata());
   }
 
   /** Stops run() but keeps the connection; run() may be called again (upstream superset). */
@@ -399,7 +509,7 @@ export class Consumer {
     } catch (error) {
       if (error instanceof LibrdKafkaError && error.code === ERROR_CODES.ERR__NO_OFFSET) return;
       // Never throw from disconnect — logging suffices (offsets get redelivered, at-least-once).
-      console.error("bun-rdkafka: commit during disconnect failed:", error);
+      this.#logger.error(`Commit during disconnect failed: ${String(error)}`, this.#metadata());
     }
   }
 
@@ -486,6 +596,84 @@ export class Consumer {
   }
 
   /**
+   * Fetches the committed offsets of `topicPartitions` (default: the current
+   * assignment). `timeout` -1 = infinite (upstream default). Cold path: the
+   * broker round-trip blocks like the callback layer's committed().
+   */
+  async committed(
+    topicPartitions: TopicPartition[] | null = null,
+    timeout = -1,
+  ): Promise<CommittedOffset[]> {
+    if (!this.#connected) {
+      throw new KafkaJSError("Committed can only be called while connected.", {
+        code: ERROR_CODES.ERR__STATE,
+      });
+    }
+    const targets: CbTopicPartition[] = (topicPartitions ?? this.assignment()).map((tp) => ({
+      topic: tp.topic,
+      partition: tp.partition,
+    }));
+    return new Promise((resolve, reject) => {
+      this.#inner.committed(targets, timeout, (err, offsets) => {
+        if (err) {
+          reject(fromLibrdKafkaError(err));
+          return;
+        }
+        resolve(
+          (offsets ?? []).map((o) => ({
+            topic: o.topic,
+            partition: o.partition,
+            offset: String(o.offset),
+            leaderEpoch: o.leaderEpoch ?? null,
+            metadata: o.metadata ?? null,
+          })),
+        );
+      });
+    });
+  }
+
+  /**
+   * Stores offsets for the next (auto or manual) commit — `offset` is the
+   * NEXT offset to read, exactly as for commitOffsets(). Only assigned
+   * partitions may be stored (ERR__STATE otherwise). Interplay with run() is
+   * described in the "Offset semantics" section at the top of this file.
+   */
+  storeOffsets(topicPartitions: TopicPartitionOffsetAndMetadata[]): void {
+    if (!this.#connected) {
+      throw new KafkaJSError("storeOffsets can only be called while connected.", {
+        code: ERROR_CODES.ERR__STATE,
+      });
+    }
+    if (!Array.isArray(topicPartitions)) {
+      throw new KafkaJSError("storeOffsets requires an array of {topic, partition, offset}.", {
+        code: ERROR_CODES.ERR__INVALID_ARG,
+      });
+    }
+    const entries: CbTopicPartitionOffsetAndMetadata[] = topicPartitions.map((tpo) => {
+      const offset = Number(tpo.offset);
+      if (typeof tpo.topic !== "string" || !Number.isInteger(tpo.partition) || !Number.isFinite(offset)) {
+        throw new KafkaJSError("storeOffsets: each entry needs {topic: string, partition: number, offset}.", {
+          code: ERROR_CODES.ERR__INVALID_ARG,
+        });
+      }
+      const entry: CbTopicPartitionOffsetAndMetadata = { topic: tpo.topic, partition: tpo.partition, offset };
+      if (typeof tpo.leaderEpoch === "number") entry.leaderEpoch = tpo.leaderEpoch;
+      if (typeof tpo.metadata === "string") entry.metadata = tpo.metadata;
+      return entry;
+    });
+    if (entries.length === 0) return;
+    try {
+      this.#inner.offsetsStore(entries);
+    } catch (error) {
+      throw error instanceof LibrdKafkaError ? fromLibrdKafkaError(error) : error;
+    }
+    for (const entry of entries) {
+      const state = this.#parts.get(partKey(entry.topic, entry.partition));
+      if (state !== undefined) state.storedNext = entry.offset;
+    }
+  }
+
+  /**
    * Seeks the partition to `offset`. Not-yet-assigned partition → remembered
    * and applied when a rebalance grants the partition (upstream semantics).
    * With autoCommit on → the seeked offset is committed immediately (upstream
@@ -515,9 +703,22 @@ export class Consumer {
 
   /* --------------------------------------------------------- flow control */
 
-  pause(topicPartitions: TopicPartitions[]): void {
+  /**
+   * Pauses the partitions; returns a function resuming exactly the paused
+   * partitions (upstream: `const resume = consumer.pause([...])`).
+   */
+  pause(topicPartitions: TopicPartitions[]): () => void {
+    if (!this.#connected) {
+      throw new KafkaJSError("Pause can only be called while connected.", {
+        code: ERROR_CODES.ERR__STATE,
+      });
+    }
     const targets = expandTopicPartitions(topicPartitions, this.#assignedList());
-    if (targets.length === 0) return;
+    const resumeFn = (): void => {
+      this.resume(targets.map((tp) => ({ topic: tp.topic, partitions: [tp.partition] })));
+    };
+    if (targets.length === 0) return resumeFn;
+    this.#logger.debug(`Pausing ${targets.length} partition(s)`, this.#metadata());
     this.#inner.pause(targets);
     for (const tp of targets) {
       const state = this.#parts.get(partKey(tp.topic, tp.partition));
@@ -529,11 +730,18 @@ export class Consumer {
       if (next !== null) this.#rewind(state, next);
       else state.epoch++; // still invalidates the running handler (stale)
     }
+    return resumeFn;
   }
 
   resume(topicPartitions: TopicPartitions[]): void {
+    if (!this.#connected) {
+      throw new KafkaJSError("Resume can only be called while connected.", {
+        code: ERROR_CODES.ERR__STATE,
+      });
+    }
     const targets = expandTopicPartitions(topicPartitions, this.#assignedList());
     if (targets.length === 0) return;
+    this.#logger.debug(`Resuming ${targets.length} partition(s)`, this.#metadata());
     this.#inner.resume(targets);
     for (const tp of targets) {
       const state = this.#parts.get(partKey(tp.topic, tp.partition));
@@ -581,7 +789,7 @@ export class Consumer {
       this.#inner.consume(FETCH_CHUNK, (err, messages) => {
         this.#pumpActive = false;
         if (!this.#running || runEpoch !== this.#runEpoch) return;
-        if (err) console.error("bun-rdkafka: consume inside run() failed:", err);
+        if (err) this.#logger.error(`consume() inside run() failed: ${err.message}`, this.#metadata());
         else if (messages.length > 0) {
           for (const msg of messages) this.#route(msg);
           this.#signal();
@@ -590,7 +798,7 @@ export class Consumer {
       });
     } catch (error) {
       this.#pumpActive = false;
-      console.error("bun-rdkafka: fetch pump stopped:", error);
+      this.#logger.error(`Fetch pump stopped: ${String(error)}`, this.#metadata());
     }
   }
 
@@ -607,7 +815,12 @@ export class Consumer {
     this.#queuedTotal++;
   }
 
-  #ensurePart(topic: string, partition: number): PartitionState {
+  /**
+   * Creates the partition state if missing. `startOffset` (a real offset the
+   * partition was assigned at — pending seek or a user-modified assignment)
+   * seeds `storedNext`, exactly like seek() does.
+   */
+  #ensurePart(topic: string, partition: number, startOffset?: number): PartitionState {
     const key = partKey(topic, partition);
     let state = this.#parts.get(key);
     if (state === undefined) {
@@ -622,13 +835,8 @@ export class Consumer {
         storedNext: -1,
       };
       this.#parts.set(key, state);
-      const pendingSeek = this.#pendingSeeks.get(key);
-      if (pendingSeek !== undefined) {
-        this.#pendingSeeks.delete(key);
-        this.#rewind(state, pendingSeek);
-        state.storedNext = pendingSeek;
-      }
     }
+    if (startOffset !== undefined && startOffset >= 0) state.storedNext = startOffset;
     return state;
   }
 
@@ -666,18 +874,109 @@ export class Consumer {
         return;
       }
       if (state.epoch === epochAtSeek) {
-        console.error(`bun-rdkafka: seek ${state.key}@${offset} failed:`, err);
+        this.#logger.error(`Seek ${state.key}@${offset} failed: ${err.message}`, this.#metadata());
       }
     });
   }
 
-  #onRebalance(err: LibrdKafkaError, parts: CbTopicPartition[]): void {
-    if (err.code === ERROR_CODES.ERR__ASSIGN_PARTITIONS) {
-      for (const tp of parts) this.#ensurePart(tp.topic, tp.partition);
+  /* ----------------------------------------------------------- rebalance */
+
+  /**
+   * The `rebalance_cb` trampoline installed on the callback consumer — see
+   * "Rebalance callback" at the top of this file for the semantics.
+   */
+  async #rebalanceCallback(err: LibrdKafkaError, parts: CbTopicPartition[]): Promise<void> {
+    const isAssign = err.code === ERROR_CODES.ERR__ASSIGN_PARTITIONS;
+    const isLost = this.#inner.assignmentLost();
+    let assignment: RebalanceAssignment[] = parts.map((tp) => ({ ...tp }));
+    let assignmentFnCalled = false;
+    let assignmentModified = false;
+
+    // REVOKE bookkeeping runs synchronously (before any await): running
+    // handlers go stale and queued messages are dropped right away.
+    if (!isAssign) this.#forgetPartitions(parts);
+
+    this.#logger.info(
+      `Received rebalance event with message: '${err.message}' and ${parts.length} partition(s), isLost: ${isLost}`,
+      this.#metadata(),
+    );
+
+    const assignFn = (userAssignment: RebalanceAssignment[]): void => {
+      if (assignmentFnCalled) return;
+      assignmentFnCalled = true;
+      const list = userAssignment as CbAssignment[];
+      if (this.#inner.rebalanceProtocol() === "COOPERATIVE") this.#inner.incrementalAssign(list);
+      else this.#inner.assign(list);
+      for (const tp of userAssignment) this.#ensurePart(tp.topic, tp.partition, tp.offset);
       this.#signal();
-      return;
+    };
+    const unassignFn = (userAssignment: RebalanceAssignment[]): void => {
+      if (assignmentFnCalled) return;
+      assignmentFnCalled = true;
+      this.#forgetPartitions(userAssignment);
+      if (this.#inner.rebalanceProtocol() === "COOPERATIVE") {
+        this.#inner.incrementalUnassign(userAssignment as CbAssignment[]);
+      } else {
+        this.#inner.unassign();
+      }
+    };
+
+    try {
+      const userCb = this.#userRebalanceCb;
+      if (userCb !== undefined) {
+        const assignmentFns: AssignmentFns = {
+          assign: assignFn,
+          unassign: unassignFn,
+          assignmentLost: () => isLost,
+        };
+        let alternate: unknown = null;
+        try {
+          alternate = await userCb(err, assignment, assignmentFns);
+        } catch (error) {
+          this.#logger.error(
+            `Error from user's rebalance callback: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}, ` +
+              "continuing with the default rebalance behavior.",
+            this.#metadata(),
+          );
+        }
+        if (alternate) {
+          assignment = alternate as RebalanceAssignment[];
+          assignmentModified = true;
+        }
+      } else if (!isAssign && err.code !== ERROR_CODES.ERR__REVOKE_PARTITIONS) {
+        throw new Error(`Unexpected rebalance_cb error code ${err.code}`);
+      }
+    } finally {
+      try {
+        if (isAssign) {
+          if (this.#pendingSeeks.size > 0 && !assignmentModified && !assignmentFnCalled) {
+            assignment = this.#applyPendingSeeks(assignment);
+          }
+          assignFn(assignment);
+        } else {
+          unassignFn(assignment);
+        }
+      } catch (error) {
+        // A disconnect racing the rebalance is not an error worth reporting.
+        if (this.#inner.isConnected()) this.#inner.emit("rebalance.error", error);
+      }
     }
-    // REVOKE: bump the epoch (invalidating running handlers) then drop the state.
+  }
+
+  /** Folds pending seeks into the assignment as start offsets (consumed here). */
+  #applyPendingSeeks(assignment: RebalanceAssignment[]): RebalanceAssignment[] {
+    for (const tp of assignment) {
+      const key = partKey(tp.topic, tp.partition);
+      const offset = this.#pendingSeeks.get(key);
+      if (offset === undefined) continue;
+      this.#pendingSeeks.delete(key);
+      tp.offset = offset;
+    }
+    return assignment;
+  }
+
+  /** REVOKE bookkeeping: bump the epoch (invalidating running handlers), drop the state. */
+  #forgetPartitions(parts: readonly TopicPartition[]): void {
     for (const tp of parts) {
       const key = partKey(tp.topic, tp.partition);
       const state = this.#parts.get(key);
@@ -729,7 +1028,7 @@ export class Consumer {
         else await this.#processBatch(state, runEpoch);
       } catch (error) {
         // Never let a worker die on an internal error — handler errors are handled inside.
-        console.error("bun-rdkafka: internal worker error:", error);
+        this.#logger.error(`Internal worker error: ${String(error)}`, this.#metadata());
       } finally {
         state.claimed = false;
         this.#signal();
@@ -763,7 +1062,7 @@ export class Consumer {
     } catch (error) {
       // The partition may have just been revoked — the new owner handles the offset.
       if (!(error instanceof LibrdKafkaError && error.code === ERROR_CODES.ERR__STATE)) {
-        console.error(`bun-rdkafka: offsetsStore ${state.key} failed:`, error);
+        this.#logger.error(`offsetsStore ${state.key} failed: ${String(error)}`, this.#metadata());
       }
     }
   }
@@ -794,9 +1093,10 @@ export class Consumer {
       try {
         await handler(payload);
       } catch (error) {
-        console.error(
-          `bun-rdkafka: eachMessage failed at ${state.key}@${entry.msg.offset}; ` +
+        this.#logger.error(
+          `eachMessage failed at ${state.key}@${entry.msg.offset}; ` +
             `the message may be redelivered. ${String(error)}`,
+          this.#metadata(),
         );
         if (state.epoch === epochAtStart) this.#rewind(state, entry.msg.offset);
         return;
@@ -863,9 +1163,10 @@ export class Consumer {
       await handler(payload);
     } catch (error) {
       threw = true;
-      console.error(
-        `bun-rdkafka: eachBatch failed at ${state.key}[${first.offset}..${last.offset}]; ` +
+      this.#logger.error(
+        `eachBatch failed at ${state.key}[${first.offset}..${last.offset}]; ` +
           `the unresolved part will be redelivered. ${String(error)}`,
+        this.#metadata(),
       );
     }
     if (state.epoch !== epochAtStart) return; // stale — pause/seek/rebalance took care of it

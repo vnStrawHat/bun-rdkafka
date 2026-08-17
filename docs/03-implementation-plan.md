@@ -210,6 +210,11 @@ binary protocol, the PollScheduler, no event-loop blocking, no crashes.
       applicable to bun:ffi): `getClient`, `setPollInBackground`, `setDefaultConsumeLoopTimeoutDelay`.
 - [x] Stream API landed (2026-08-17): `Producer.createWriteStream` / `KafkaConsumer.createReadStream` + module-level `createReadStream`/`createWriteStream` (`ProducerStream` / `ConsumerStream` over `node:stream`), conformance exclusions removed, unit + integration tests, `examples/streams.ts`.
 - [ ] Re-walk the v1.0 acceptance checklist in spec §8; close remaining differences or record them publicly.
+- [x] KafkaJS API gaps closed (2026-08-17): `Consumer.committed()/storeOffsets()/logger()/
+      dependentAdmin()/_getInternalClient()`, `pause()` returns a resume fn, `rebalance_cb`
+      with `assignmentFns` (upstream semantics), `producer.sendOffsets({consumer})` works with
+      the KafkaJS Consumer; the shim now forwards librdkafka's log queue (`event.log` was
+      silently dropped before). Exclusions removed from `test/conformance/exclusions.ts`.
 - [ ] Tag `v1.0.0`.
 
 ---

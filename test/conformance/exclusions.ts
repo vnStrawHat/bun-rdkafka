@@ -111,42 +111,4 @@ export const EXCLUSIONS: readonly Exclusion[] = [
       "at all — the `.d.ts` declaration is a nonexistent API. We will follow upstream " +
       "if they actually add it (the Callback API's Client.setSaslCredentials is ready).",
   },
-
-  /* ---------------------------------------------------------------------- *
-   * 4. Requiring substantial C-shim work (new ABI) — recorded in the plan   *
-   * ---------------------------------------------------------------------- */
-  {
-    path: "kafkajs:Consumer.logger",
-    reason:
-      "KafkaJS.Consumer does not hold its own Logger yet (Producer/Admin do). Needs " +
-      "the logger built from the config in the constructor, then wired to the " +
-      "underlying KafkaConsumer's 'event.log' — state + wiring, not an alias. " +
-      "FR-2 §4 only commits to logLevel + a custom logger at the config level " +
-      "(already present).",
-    milestone: "M6",
-  },
-  {
-    path: "kafkajs:Consumer.dependentAdmin",
-    reason:
-      "Depends on kafkajs:Consumer.logger: Admin(existingClient) requires the parent " +
-      "client to have both _getInternalClient() and logger(). To be done together " +
-      "with logger().",
-    milestone: "M6",
-  },
-  {
-    path: "kafkajs:Consumer.storeOffsets",
-    reason:
-      "The promisified Consumer manages offset stores inside the ADR-4b scheduler " +
-      "(per-partition queue + epoch). Letting users store arbitrary offsets must " +
-      "reconcile with the running epochs — real work, not an alias. Not listed in " +
-      "FR-2 §4.",
-    milestone: "M6",
-  },
-  {
-    path: "kafkajs:Consumer.committed",
-    reason:
-      "Needs KafkaConsumer.committed() (blocking on librdkafka's side) wrapped in " +
-      "the async pattern with KafkaJS's string offset format. Not listed in FR-2 §4.",
-    milestone: "M6",
-  },
 ];

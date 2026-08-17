@@ -229,6 +229,11 @@ BRK_EXPORT void *brk_client_new(int32_t type, void *conf, char *errstr,
   h->type = type;
   h->rk = rk;
   h->main_q = rd_kafka_queue_get_main(rk);
+  /* `log.queue=true` parks logs on librdkafka's private log queue, which is
+   * NOT served by anything until it is forwarded: without this call every log
+   * (including `debug=` output) is silently dropped. Forward it to main_q so
+   * RD_KAFKA_EVENT_LOG surfaces through brk_events_poll. */
+  rd_kafka_set_log_queue(rk, h->main_q);
   brk_mutex_init(&h->mu);
   if (type == BRK_CLIENT_CONSUMER) {
     /* NOTE (diverges from a header comment, not from the ABI): we do not use
