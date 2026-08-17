@@ -314,7 +314,7 @@ export class Producer extends Client {
           ? error
           : new LibrdKafkaError(String(error), { context: "produce" });
       for (const record of records) this.ledger.fail(record.opaqueId, err);
-      this.pendingProduceError ??= err;
+      this.pendingProduceError ??= this.recordError(err);
       return;
     }
 
@@ -327,7 +327,7 @@ export class Producer extends Client {
       const record = records[i];
       if (record !== undefined) this.ledger.fail(record.opaqueId, err);
       // Surfaces as a throw on the next produce() — keep the FIRST error.
-      this.pendingProduceError ??= err;
+      this.pendingProduceError ??= this.recordError(err);
     }
 
     // DRs are about to arrive: kick the scheduler to HOT.
@@ -598,7 +598,7 @@ export class Producer extends Client {
           setTimeout(attempt, 0);
           return;
         }
-        cb?.(err);
+        cb?.(this.recordError(err));
       }
     };
     queueMicrotask(attempt);

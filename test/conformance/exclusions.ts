@@ -143,23 +143,6 @@ export const EXCLUSIONS: readonly Exclusion[] = [
    * 4. Requiring substantial C-shim work (new ABI) — recorded in the plan   *
    * ---------------------------------------------------------------------- */
   {
-    path: "rdkafka:KafkaConsumer.offsetsForTimes",
-    reason:
-      "Needs a new shim symbol for rd_kafka_offsets_for_times (a blocking call → " +
-      "must follow brk_admin_request's async pattern to avoid blocking the event " +
-      "loop, NFR-2). Not in the FR-1 §4 list.",
-    milestone: "M6",
-  },
-  {
-    path: "rdkafka:Client.getLastError",
-    reason:
-      "Needs Client to remember the last LibrdKafkaError across every path " +
-      "(event.error, delivery-report, admin) — a behavior change, not an export. " +
-      "Not in FR-1 §4; applications use the 'event.error' event as upstream " +
-      "recommends.",
-    milestone: "M6",
-  },
-  {
     path: "rdkafka:HighLevelProducer.setTopicKeySerializer",
     reason:
       "Per-topic serializers: needs a per-topic serializer table + precedence over " +

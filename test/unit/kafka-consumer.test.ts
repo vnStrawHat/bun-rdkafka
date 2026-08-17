@@ -344,6 +344,47 @@ describe("KafkaConsumer flowing", () => {
     await waitUntil(() => data.length === 1 && eofs.length === 1 && errors.length === 1);
     expect(eofs[0]).toEqual({ topic: "m3-topic", partition: 0, offset: 6 });
     expect(errors[0]?.code).toBe(ERROR_CODES.ERR__TRANSPORT);
+    // getLastError() tracks event.error.
+    expect(consumer.getLastError()?.code).toBe(ERROR_CODES.ERR__TRANSPORT);
+    consumer.disconnect();
+  });
+
+  test("flowing: UNKNOWN_TOPIC_OR_PART / TOPIC_AUTHORIZATION_FAILED → 'warning', not 'event.error'", async () => {
+    const world = new FakeWorld();
+    world.topicNames.set(TOPIC_ID, "m3-topic");
+    world.pushMessages([
+      raw({ offset: 0, err: ERROR_CODES.ERR_UNKNOWN_TOPIC_OR_PART, value: null }),
+      raw({ offset: 0, err: ERROR_CODES.ERR_TOPIC_AUTHORIZATION_FAILED, value: null }),
+      raw({ offset: 0, err: ERROR_CODES.ERR__TRANSPORT, value: null }),
+    ]);
+    const consumer = await makeConsumer(world);
+    const warnings: LibrdKafkaError[] = [];
+    const errors: LibrdKafkaError[] = [];
+    consumer.on("warning", (e: LibrdKafkaError) => warnings.push(e));
+    consumer.on("event.error", (e: LibrdKafkaError) => errors.push(e));
+    consumer.subscribe(["m3-topic"]);
+    consumer.consume();
+    await waitUntil(() => warnings.length === 2 && errors.length === 1);
+    expect(warnings.map((w) => w.code)).toEqual([
+      ERROR_CODES.ERR_UNKNOWN_TOPIC_OR_PART,
+      ERROR_CODES.ERR_TOPIC_AUTHORIZATION_FAILED,
+    ]);
+    expect(errors[0]?.code).toBe(ERROR_CODES.ERR__TRANSPORT);
+    consumer.disconnect();
+  });
+
+  test("non-flowing: the same codes stay 'event.error' (upstream only warns in flowing mode)", async () => {
+    const world = new FakeWorld();
+    world.topicNames.set(TOPIC_ID, "m3-topic");
+    world.pushMessages([raw({ offset: 0, err: ERROR_CODES.ERR_UNKNOWN_TOPIC_OR_PART, value: null })]);
+    const consumer = await makeConsumer(world);
+    const warnings: LibrdKafkaError[] = [];
+    const errors: LibrdKafkaError[] = [];
+    consumer.on("warning", (e: LibrdKafkaError) => warnings.push(e));
+    consumer.on("event.error", (e: LibrdKafkaError) => errors.push(e));
+    consumer.subscribe(["m3-topic"]);
+    await waitUntil(() => errors.length === 1);
+    expect(warnings).toHaveLength(0);
     consumer.disconnect();
   });
 });

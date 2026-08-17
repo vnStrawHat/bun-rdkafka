@@ -160,6 +160,15 @@ describe("function property", () => {
     expect(properties).toEqual([]);
   });
 
+  test("event_cb: true / function / false (upstream: false disables) never reaches librdkafka", () => {
+    expect(buildConfig({ event_cb: true }).callbacks.event_cb).toBe(true);
+    const fn = () => {};
+    expect(buildConfig({ event_cb: fn }).callbacks.event_cb).toBe(fn);
+    const off = buildConfig({ event_cb: false });
+    expect(off.callbacks.event_cb).toBeUndefined();
+    expect(off.properties).toEqual([]);
+  });
+
   test("unknown functions are rejected instead of silently dropped", () => {
     expect(() => buildConfig({ my_cb: () => {} })).toThrow(ConfigError);
   });

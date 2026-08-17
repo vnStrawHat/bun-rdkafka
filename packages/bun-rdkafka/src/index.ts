@@ -122,6 +122,7 @@ export {
   type MessageHeader,
   type MessageKey,
   type MessageValue,
+  type OffsetsForTimesCallback,
   type RebalanceProtocolName,
   type SeekCallback,
   type SubscribeTopicList,

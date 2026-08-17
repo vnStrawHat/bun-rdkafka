@@ -391,3 +391,120 @@ describe("getMetadata / queryWatermarkOffsets", () => {
     await disconnectAsync(client);
   });
 });
+
+/* ========================================================================== */
+/* M8 gaps: connection.failure, getLastError, event_cb                         */
+/* ========================================================================== */
+
+describe("connection.failure + getLastError", () => {
+  test("metadata failure emits 'connection.failure' (err, metrics) and getLastError() returns it", async () => {
+    const TIMED_OUT_RET = BRK_ERR_KAFKA_OFFSET + ERROR_CODES.ERR__TIMED_OUT;
+    const { client } = makeClient({ brk_metadata: () => TIMED_OUT_RET });
+    expect(client.getLastError()).toBeNull();
+
+    const failures: { err: LibrdKafkaError; metrics: ClientMetrics }[] = [];
+    client.on("connection.failure", (err: LibrdKafkaError, metrics: ClientMetrics) =>
+      failures.push({ err, metrics }),
+    );
+    const t0 = Date.now();
+    const err = await connectAsync(client).catch((e: LibrdKafkaError) => e);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.err).toBe(err as LibrdKafkaError);
+    expect(failures[0]?.metrics.connectionOpened).toBeGreaterThanOrEqual(t0);
+    expect(client.getLastError()).toBe(err as LibrdKafkaError);
+  });
+
+  test("getLastError() follows every 'event.error' emission (latest wins)", async () => {
+    const frames = encodeEventFrames([
+      { type: BRK_EVENT_ERROR, payload: errorPayload(ERROR_CODES.ERR__ALL_BROKERS_DOWN, false, "down") },
+      { type: BRK_EVENT_ERROR, payload: errorPayload(ERROR_CODES.ERR__TRANSPORT, false, "transport") },
+    ]);
+    let fed = false;
+    const { client } = makeClient({
+      brk_events_poll: (_h: unknown, buf: Uint8Array) => {
+        if (fed) return 0;
+        fed = true;
+        buf.set(frames);
+        return 2;
+      },
+    });
+    client.on("event.error", () => {});
+    await connectAsync(client);
+    await sleep(20);
+    expect(client.getLastError()?.code).toBe(ERROR_CODES.ERR__TRANSPORT);
+    await disconnectAsync(client);
+  });
+
+  test("a failed getMetadata() also becomes the last error", async () => {
+    const { client } = makeClient();
+    const err = await new Promise<LibrdKafkaError | null>((resolve) =>
+      client.getMetadata({}, (e) => resolve(e)),
+    );
+    expect(err?.code).toBe(ERROR_CODES.ERR__STATE);
+    expect(client.getLastError()).toBe(err);
+  });
+});
+
+describe("event_cb opt-in → 'event.event' / 'event'", () => {
+  function clientWithFrames(conf: Record<string, unknown>) {
+    const frames = encodeEventFrames([
+      { type: BRK_EVENT_LOG, payload: logPayload(6, "FAC", "hello") },
+      { type: BRK_EVENT_THROTTLE, payload: throttlePayload(7, 250, "broker-7") },
+    ]);
+    let fed = false;
+    const fake = fakeNative({
+      brk_metadata: metadataOk(),
+      brk_events_poll: (_h: unknown, buf: Uint8Array) => {
+        if (fed) return 0;
+        fed = true;
+        buf.set(frames);
+        return 2;
+      },
+    });
+    const client = new Client(
+      { "bootstrap.servers": "x", ...conf },
+      undefined,
+      BRK_CLIENT_PRODUCER,
+      { native: fake.native, onLeak: () => {} },
+    );
+    return client;
+  }
+
+  test("without event_cb nothing extra is emitted", async () => {
+    const client = clientWithFrames({});
+    const raw: unknown[] = [];
+    client.on("event.event", (e: unknown) => raw.push(e));
+    client.on("event", (e: unknown) => raw.push(e));
+    await connectAsync(client);
+    await sleep(20);
+    expect(raw).toHaveLength(0);
+    await disconnectAsync(client);
+  });
+
+  test("event_cb: true re-emits every decoded frame ({type, ...}) on both names", async () => {
+    const client = clientWithFrames({ event_cb: true });
+    const viaEvent: BrkEvent[] = [];
+    const viaAlias: BrkEvent[] = [];
+    const logs: unknown[] = [];
+    client.on("event.event", (e: BrkEvent) => viaEvent.push(e));
+    client.on("event", (e: BrkEvent) => viaAlias.push(e));
+    client.on("event.log", (l: unknown) => logs.push(l));
+    await connectAsync(client);
+    await sleep(20);
+    expect(viaEvent.map((e) => e.type)).toEqual([BRK_EVENT_LOG, BRK_EVENT_THROTTLE]);
+    expect(viaAlias).toEqual(viaEvent);
+    // The specialized events still fire.
+    expect(logs).toHaveLength(1);
+    expect((viaEvent[0] as { message?: string }).message).toBe("hello");
+    await disconnectAsync(client);
+  });
+
+  test("event_cb as a function is registered as an 'event.event' listener", async () => {
+    const seen: BrkEvent[] = [];
+    const client = clientWithFrames({ event_cb: (e: BrkEvent) => seen.push(e) });
+    await connectAsync(client);
+    await sleep(20);
+    expect(seen).toHaveLength(2);
+    await disconnectAsync(client);
+  });
+});

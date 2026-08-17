@@ -103,6 +103,10 @@ export type CommittedCallback = (
   topicPartitions?: TopicPartitionOffsetAndMetadata[],
 ) => void;
 export type SeekCallback = (err: LibrdKafkaError | null) => void;
+export type OffsetsForTimesCallback = (
+  err: LibrdKafkaError | null,
+  topicPartitions?: TopicPartitionOffset[],
+) => void;
 
 export type RebalanceProtocolName = "NONE" | "EAGER" | "COOPERATIVE";
 
@@ -111,6 +115,13 @@ export type RebalanceProtocolName = "NONE" | "EAGER" | "COOPERATIVE";
 /* ========================================================================== */
 
 const DEFAULT_CONSUME_TIMEOUT_MS = 1000;
+/** Upstream's default for `offsetsForTimes()` when no timeout is given. */
+const DEFAULT_OFFSETS_FOR_TIMES_TIMEOUT_MS = 1000;
+/** Consume-path errors reported as `warning` (not `event.error`) in flowing mode — upstream. */
+const FLOWING_WARNING_CODES = new Set<number>([
+  ERROR_CODES.ERR_UNKNOWN_TOPIC_OR_PART,
+  ERROR_CODES.ERR_TOPIC_AUTHORIZATION_FAILED,
+]);
 /** Internal buffer cap; beyond it, each poll round pulls only 1 message. */
 const MAX_BUFFERED_MESSAGES = 10_000;
 /** Max messages per `brk_consume_batch` call. */
@@ -387,7 +398,45 @@ export class KafkaConsumer extends Client {
         );
         callback(null, entries.map(toTopicPartitionOffsetAndMetadata));
       } catch (error) {
-        callback(KafkaConsumer.#asError(error, "committed"));
+        callback(this.recordError(KafkaConsumer.#asError(error, "committed")));
+      }
+    });
+    return this;
+  }
+
+  /**
+   * Looks up, for every `{topic, partition, offset}` where `offset` is a
+   * timestamp (ms), the earliest offset whose message timestamp is >= that
+   * timestamp (upstream's `offsetsForTimes`). Returns `-1`
+   * (`RD_KAFKA_OFFSET_END`) as offset when no such message exists. Blocks up
+   * to `timeout` like `committed()` (broker round-trip, cold path).
+   */
+  offsetsForTimes(topicPartitions: TopicPartitionOffset[], cb?: OffsetsForTimesCallback): this;
+  offsetsForTimes(
+    topicPartitions: TopicPartitionOffset[],
+    timeout: number,
+    cb?: OffsetsForTimesCallback,
+  ): this;
+  offsetsForTimes(
+    topicPartitions: TopicPartitionOffset[],
+    timeout?: number | OffsetsForTimesCallback,
+    cb?: OffsetsForTimesCallback,
+  ): this {
+    // Upstream defaults the timeout to 1000ms when omitted / falsy.
+    let timeoutMs = DEFAULT_OFFSETS_FOR_TIMES_TIMEOUT_MS;
+    let callback = cb;
+    if (typeof timeout === "function") callback = timeout;
+    else if (timeout) timeoutMs = timeout;
+    // Cold path: brk_offsets_for_times blocks up to `timeout` — same contract as committed().
+    queueMicrotask(() => {
+      try {
+        const entries = this.#nc("offsetsForTimes").offsetsForTimes(
+          topicPartitions.map(toInput),
+          timeoutMs,
+        );
+        callback?.(null, entries.map(toTopicPartitionOffset));
+      } catch (error) {
+        callback?.(this.recordError(KafkaConsumer.#asError(error, "offsetsForTimes")));
       }
     });
     return this;
@@ -399,7 +448,7 @@ export class KafkaConsumer extends Client {
         this.#nc("seek").seek(toppar.topic, toppar.partition, toppar.offset, timeout ?? 0);
         cb(null);
       } catch (error) {
-        cb(KafkaConsumer.#asError(error, "seek"));
+        cb(this.recordError(KafkaConsumer.#asError(error, "seek")));
       }
     });
     return this;
@@ -496,10 +545,15 @@ export class KafkaConsumer extends Client {
       } satisfies EofEvent);
       return;
     }
-    this.emit(
-      "event.error",
-      LibrdKafkaError.fromKafkaCode(m.err, undefined, { context: "consume" }),
-    );
+    const err = LibrdKafkaError.fromKafkaCode(m.err, undefined, { context: "consume" });
+    // Upstream (flowing mode): UNKNOWN_TOPIC_OR_PART / TOPIC_AUTHORIZATION_FAILED
+    // are transient — the consumer keeps working and the error reappears on the
+    // next metadata refresh — so they surface as `warning`, not `event.error`.
+    if (this.#flowing && FLOWING_WARNING_CODES.has(m.err)) {
+      this.emit("warning", err);
+      return;
+    }
+    this.emit("event.error", err);
   }
 
   /** Serves `consume(n, cb)` requests in FIFO order. */

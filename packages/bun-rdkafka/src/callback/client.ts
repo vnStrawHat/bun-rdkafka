@@ -212,6 +212,10 @@ export class Client extends EventEmitter {
   private connectionOpenedAt = 0;
   /** Pending ADMIN_RESULTs by correlation_id (see `_registerAdminResult`). */
   private readonly adminPending = new Map<bigint, (event: BrkAdminResultEvent) => void>();
+  /** Last error seen by this client (upstream `getLastError()`); `null` until one happens. */
+  private lastError: LibrdKafkaError | null = null;
+  /** `event_cb` opt-in: re-emit every raw event frame as `event.event` / `event`. */
+  private readonly emitRawEvents: boolean;
 
   constructor(
     globalConf: ClientConfig | undefined,
@@ -224,11 +228,36 @@ export class Client extends EventEmitter {
     this.built = new ConfigBuilder(globalConf, topicConf).build();
     this.internal = internal;
     this.nameValue = nextName(clientType);
+
+    // Upstream remembers the last `event.error` for getLastError() — subclasses
+    // emit through the same event, so one listener covers every path.
+    this.on("event.error", (err: unknown) => {
+      if (err instanceof LibrdKafkaError) this.lastError = err;
+    });
+
+    const eventCb = this.built.callbacks.event_cb;
+    this.emitRawEvents = eventCb !== undefined;
+    if (typeof eventCb === "function") this.on("event.event", eventCb as (event: BrkEvent) => void);
   }
 
   /** Client name, of the form `producer#1` / `consumer#2`. */
   get name(): string {
     return this.nameValue;
+  }
+
+  /**
+   * The last `LibrdKafkaError` this client saw (connect failure, `event.error`,
+   * a failed native call surfaced through a callback), or `null` — upstream's
+   * `Client#getLastError()`.
+   */
+  getLastError(): LibrdKafkaError | null {
+    return this.lastError;
+  }
+
+  /** Records `err` as the last error (subclasses call this from their error paths). */
+  protected recordError<E extends LibrdKafkaError>(err: E): E {
+    this.lastError = err;
+    return err;
   }
 
   protected get jsOptions(): JsOptions {
@@ -269,7 +298,7 @@ export class Client extends EventEmitter {
       nc = new NativeClient(this.nativeOptions());
       nc.connect();
     } catch (error) {
-      const err = toLibrdKafkaError(error, "connect");
+      const err = this.recordError(toLibrdKafkaError(error, "connect"));
       queueMicrotask(() => {
         this.emit("event.error", err);
         cb?.(err);
@@ -291,9 +320,13 @@ export class Client extends EventEmitter {
       try {
         metadata = JSON.parse(nc.metadata(topic, timeout)) as Metadata;
       } catch (error) {
-        const err = toLibrdKafkaError(error, "connect");
+        const err = this.recordError(toLibrdKafkaError(error, "connect"));
+        const metrics: ClientMetrics = { connectionOpened: this.connectionOpenedAt };
         this.teardown(nc);
         this.emit("event.error", err);
+        // Upstream: the handle came up but the first metadata fetch failed →
+        // `connection.failure` (err, metrics) in addition to the connect cb.
+        this.emit("connection.failure", err, metrics);
         cb?.(err);
         return;
       }
@@ -341,13 +374,13 @@ export class Client extends EventEmitter {
     const timeout = opts.timeout ?? DEFAULT_METADATA_TIMEOUT_MS;
     queueMicrotask(() => {
       if (nc === undefined || !nc.isOpen) {
-        cb?.(notConnectedError("getMetadata"));
+        cb?.(this.recordError(notConnectedError("getMetadata")));
         return;
       }
       try {
         cb?.(null, JSON.parse(nc.metadata(topic, timeout)) as Metadata);
       } catch (error) {
-        cb?.(toLibrdKafkaError(error, "getMetadata"));
+        cb?.(this.recordError(toLibrdKafkaError(error, "getMetadata")));
       }
     });
     return this;
@@ -365,14 +398,14 @@ export class Client extends EventEmitter {
     const nc = this.native;
     queueMicrotask(() => {
       if (nc === undefined || !nc.isOpen) {
-        cb?.(notConnectedError("queryWatermarkOffsets"));
+        cb?.(this.recordError(notConnectedError("queryWatermarkOffsets")));
         return;
       }
       try {
         const wm: WatermarkOffsets = nc.queryWatermark(topic, partition, timeoutMs);
         cb?.(null, { lowOffset: wm.low, highOffset: wm.high });
       } catch (error) {
-        cb?.(toLibrdKafkaError(error, "queryWatermarkOffsets"));
+        cb?.(this.recordError(toLibrdKafkaError(error, "queryWatermarkOffsets")));
       }
     });
     return this;
@@ -485,7 +518,15 @@ export class Client extends EventEmitter {
     const nc = this.native;
     if (nc === undefined || !nc.isOpen) return 0;
     const events = nc.pollEvents();
-    for (const event of events) this.dispatchEvent(event);
+    for (const event of events) {
+      this.dispatchEvent(event);
+      if (this.emitRawEvents) {
+        // `event_cb` opt-in: the decoded frame as-is (`{ type, ...payload }`),
+        // under upstream's `event.event` name and the short `event` alias.
+        this.emit("event.event", event);
+        this.emit("event", event);
+      }
+    }
     return events.length + this.pollTick();
   }
 

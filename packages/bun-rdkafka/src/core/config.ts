@@ -110,12 +110,18 @@ export const CALLBACK_KEYS = [
   "dr_cb",
   "dr_msg_cb",
   "partitioner_cb",
+  "event_cb",
 ] as const;
 
 export type CallbackKey = (typeof CALLBACK_KEYS)[number];
 
 /** Keys accepting a boolean value (enable the event without a handler). */
-const BOOLEAN_CALLBACK_KEYS = new Set<string>(["rebalance_cb", "offset_commit_cb", "dr_cb"]);
+const BOOLEAN_CALLBACK_KEYS = new Set<string>([
+  "rebalance_cb",
+  "offset_commit_cb",
+  "dr_cb",
+  "event_cb",
+]);
 
 export type ConfigCallbacks = Partial<Record<CallbackKey, AnyCallback | true>>;
 
