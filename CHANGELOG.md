@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.2.1 (2026-08-17)
+
+### Features
+
+- **kafkajs:** typed kafkaJS block and constructor configs (upstream names)
+- **types:** typed librdkafka/js.* config for the callback API + generator
+- **types:** typed events for the callback API (Client<Events>)
+- **consumer:** experimental shim-side prefetch thread (js.consume.prefetch)
+
+### Documentation
+
+- **migration:** drop shipped APIs from "not yet implemented", note typed configs/events and the js.* reference
+- **readme:** js.* configuration reference and typed-config notes
+
+### Other
+
+- **compare:** --prefetch row, CONSUMER_EXTRA, per-case topic cleanup + results
+
+**Full diff:** [v0.2.0...v0.2.1](https://github.com/vnStrawHat/bun-rdkafka/compare/v0.2.0...v0.2.1)
+
 ## v0.2.0 (2026-08-17)
 
 ### Features
