@@ -6,7 +6,10 @@ name: CI
 #   the artifact, on a DIFFERENT distro than the builder).
 # darwin and linux-arm64 were dropped from the prebuilt matrix on 2026-08-14 — those
 # platforms use the installer's source-build fallback instead (scripts/install.ts).
-# integration/bench-smoke jobs (docs/02-detail-design.md §10.1) come in a later milestone.
+# integration: the full test/integration suite against a real Apache Kafka (KRaft) broker
+# that the test helper (test/integration/docker-kafka.ts) starts itself with `docker run`
+# on the runner, using the linux-x64-gnu artifact placed at native/build/ (the loader's
+# dev-build fallback, so no BUN_RDKAFKA_LIB_PATH needed). bench-smoke stays a later item.
 #
 # `workflow_call` lets release.yml (tag v*) reuse this workflow's entire job chain
 # instead of duplicating the definitions — a release only proceeds when verify-native
@@ -281,3 +284,57 @@ jobs:
 
       - name: dlopen + builtin.features against the artifact
         run: bun test test/unit/native-features.test.ts
+
+  # ---------------------------------------------------------------------------------------
+  # integration: spec §8 ("integration tests green on CI against a real broker, linux-x64").
+  # The suite starts/reuses the broker containers itself (apache/kafka:3.9.0 pulled from
+  # Docker Hub; a second SASL container for the security suite). Runs on the SAME artifact
+  # that ships in the release, not on a locally rebuilt one.
+  # ---------------------------------------------------------------------------------------
+  integration:
+    name: integration (linux-x64-gnu, real broker)
+    needs: build-native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache bun install cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
+      - run: bun install
+
+      - name: Download native artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: native-linux-x64-gnu
+          path: native-lib
+
+      - name: Place the artifact where the loader's dev fallback looks
+        run: |
+          LIB_FILE="$(find native-lib -type f -name '*.so' | head -n1)"
+          test -n "$LIB_FILE" || (echo "::error::no .so in the artifact" && exit 1)
+          mkdir -p native/build
+          cp "$LIB_FILE" native/build/libbunrdkafka.so
+
+      - name: Pull the broker image (visible timing; the helper would pull it anyway)
+        run: docker pull apache/kafka:3.9.0
+
+      - name: bun test test/integration
+        run: bun test test/integration
+
+      - name: Broker logs on failure
+        if: failure()
+        run: |
+          docker ps -a
+          docker logs --tail 200 bun-rdkafka-test-kafka || true
+          docker logs --tail 100 bun-rdkafka-test-kafka-sasl || true
