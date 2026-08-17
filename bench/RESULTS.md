@@ -284,3 +284,37 @@ message-count cap (`js.producer.max.pending`) throws synchronously from
 
 Repro: `bun bench/compare/run.ts --producer-only` (merges into
 `bench/compare/results.json`, keeps consumer/latency medians).
+
+---
+
+## Final consolidated run — 2026-08-14, current HEAD (post 1-copy)
+
+One full session, all seven cases, both sides, on the exact code of the initial
+commit (`40f0d84`, which includes the pointer-based PRODUCE BATCH and the
+TPL-metadata format): shim rebuilt from HEAD, broker recreated clean, the SASL
+side container stopped, 3-run medians, same methodology and shared config as
+§M6. **This table supersedes the earlier mixed table** (producer numbers from
+§M6d combined with consumer/latency numbers from §M6, which were measured
+against different binaries) and is the set quoted in the README.
+
+| Case | bun-rdkafka / Bun | upstream / Node 24 | Ratio | G3 ≥1.2× |
+|---|---:|---:|---:|:--:|
+| producer 100B acks=1 | **981,760 msg/s** (93.6 MiB/s) | 668,537 (63.8) | **1.47×** | MET |
+| producer 100B acks=all | **914,716** (87.2) | 664,739 (63.4) | **1.38×** | MET |
+| producer 1KB acks=1 | 408,700 (399.1) | **646,153** (631.0) | **0.63×** | NOT MET |
+| producer 1KB acks=all | 517,344 (505.2) | **638,564** (623.6) | **0.81×** | NOT MET |
+| consumer 100B | **1,010,779 msg/s** | 408,069 | **2.48×** | MET |
+| consumer 1KB | **671,952** | 270,955 | **2.48×** | MET |
+| e2e latency p50/p99 @10k msg/s | 4 / 6 ms | **2 / 3 ms** | — | (not part of G3) |
+
+Notes versus the earlier sessions:
+
+- All ratios are consistent with §M6/§M6d: producer 100B 1.38–1.47× (previously
+  1.37–1.45×), consumer ~2.5× (previously 2.37–2.45×), latency identical.
+- The 1KB producer cases again show the high run-to-run variance documented in
+  §M6d: 0.63× and 0.81× here versus 0.74–0.78× there — the two acks variants
+  even land on opposite sides of their previous values. The bounded-queue
+  analysis and the follow-ups in §M6d remain the current understanding; the G3
+  verdict is unchanged (MET in 4/6 cases).
+
+Repro: `bun bench/compare/run.ts` (full run, ~25 minutes on this box).

@@ -2,31 +2,40 @@
 
 A native Apache Kafka client for [Bun](https://bun.sh): [librdkafka](https://github.com/confluentinc/librdkafka) bound through `bun:ffi`, with an API compatible with [confluent-kafka-javascript](https://github.com/confluentinc/confluent-kafka-javascript).
 
-> **Status: pre-release.** Not yet published to npm. Built and fully tested on linux-x64; the multi-platform CI and prebuilt-binary pipeline are configured but not yet exercised (see [Platform support](#platform-support)).
+> **Status: early release (0.x).** Published to npm as [`@vnstrawhat/bun-rdkafka`](https://www.npmjs.com/package/@vnstrawhat/bun-rdkafka) with CI-built prebuilt binaries for linux-x64 and win32-x64; other platforms build from source automatically (see [Platform support](#platform-support)). The API surface is complete and conformance-tested against upstream's type definitions, but expect 0.x-style iteration before 1.0.
 
 ## Why
 
-- **confluent-kafka-javascript does not run on Bun 1.4.** Its prebuilt N-API binaries stop at `NODE_MODULE_VERSION` 137 (Node ≤ 24), while Bun 1.4 requires 147. We verified this experimentally — see `bench/RESULTS.md` §M6.
+- **confluent-kafka-javascript does not run on Bun.** Its prebuilt N-API binaries stop at `NODE_MODULE_VERSION` 137 (Node ≤ 24), while Bun 1.4 requires 147. We verified this experimentally — see `bench/RESULTS.md` §M6.
 - **Even where the N-API path works, it is not the fast path for Bun.** bun-rdkafka is designed around `bun:ffi` from the ground up: a thin C shim statically links librdkafka into a single shared library, converts every librdkafka callback into pollable event queues (no cross-thread C→JS calls), and moves data across the FFI boundary in packed binary batches — one FFI call carries thousands of messages, decoded with `DataView`.
-- **Same API, drop-in migration.** Both API styles of confluent-kafka-javascript are provided: the classic callback API (`Producer`, `KafkaConsumer`, `AdminClient`) and the promisified `KafkaJS` namespace (`Kafka`, `producer()`, `consumer()`, `admin()`). The official upstream examples run verbatim with only the import line changed (`examples/upstream-*.js`). See [MIGRATION.md](./MIGRATION.md).
+- **Same API, drop-in migration.** All three API styles of confluent-kafka-javascript are provided: the promisified `KafkaJS` namespace (`Kafka`, `producer()`, `consumer()`, `admin()`), the classic callback API (`Producer`, `KafkaConsumer`, `AdminClient`), and the Stream API (`Producer.createWriteStream`, `KafkaConsumer.createReadStream`). The official upstream examples run verbatim with only the import line changed (`examples/upstream-*.js`). See [MIGRATION.md](./MIGRATION.md).
 
 ## Install
 
-Requires Bun ≥ 1.2. (Until the first npm release, build from source — see [CONTRIBUTING.md](./CONTRIBUTING.md).)
+Requires Bun ≥ 1.2.
 
 ```sh
 bun add @vnstrawhat/bun-rdkafka
 ```
 
-> **Bun blocks dependency lifecycle scripts by default**, and bun-rdkafka uses a
-> `postinstall` script to fetch its prebuilt native binary. Add the package to
-> `trustedDependencies` in your `package.json`, then install:
->
-> ```jsonc
-> { "trustedDependencies": ["@vnstrawhat/bun-rdkafka"] }
-> ```
->
-> Alternatively run the installer once manually: `bunx bun-rdkafka-install`.
+Bun blocks dependency lifecycle scripts by default, and bun-rdkafka uses a `postinstall`
+script to fetch its prebuilt native binary. Pick one of the two options:
+
+**Option 1 — trust the package (recommended).** Add it to `trustedDependencies` in your
+`package.json`, then run `bun install` again:
+
+```jsonc
+// package.json
+{
+  "trustedDependencies": ["@vnstrawhat/bun-rdkafka"]
+}
+```
+
+**Option 2 — run the installer manually** (once, after `bun add`):
+
+```sh
+bunx bun-rdkafka-install
+```
 
 What the installer does: downloads `libbunrdkafka-<platform>.tar.gz` from the
 [GitHub Release](https://github.com/vnStrawHat/bun-rdkafka/releases) matching the
@@ -48,7 +57,7 @@ Environment variables:
 
 ## Quick start
 
-Requires a Kafka broker.
+Requires a Kafka broker. Each of the three API styles below is shown with a producer and a consumer.
 
 ### KafkaJS-style API (promisified)
 
@@ -137,39 +146,82 @@ consumer.on("data", (message) => {
 consumer.connect();
 ```
 
-All four snippets above were verified against a real broker before being committed to this README. Configuration is librdkafka's own property set, passed through unmodified — see the [librdkafka configuration reference](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md).
+### Stream API (Node streams over the callback API)
+
+```ts
+import { Producer } from "@vnstrawhat/bun-rdkafka";
+
+// A Writable stream to one topic; the Producer is created and connected for you.
+const stream = Producer.createWriteStream(
+  { "metadata.broker.list": "localhost:9092" },
+  {},
+  { topic: "quickstart", autoClose: true }, // autoClose: flush + disconnect on end()
+);
+
+stream.on("error", (err) => console.error("producer stream error", err));
+
+for (let i = 0; i < 10; i++) {
+  // write() only tells you the message was queued; its return value is the backpressure signal
+  stream.write(Buffer.from(`hello from Bun #${i}`));
+}
+stream.end(() => console.log("10 messages written"));
+```
+
+```ts
+import { KafkaConsumer } from "@vnstrawhat/bun-rdkafka";
+
+// A Readable stream in objectMode: one Message per chunk (also an async iterable).
+const stream = KafkaConsumer.createReadStream(
+  {
+    "metadata.broker.list": "localhost:9092",
+    "group.id": "quickstart-stream-group",
+  },
+  { "auto.offset.reset": "earliest" },
+  { topics: ["quickstart"], fetchSize: 100 },
+);
+
+stream.on("error", (err) => console.error("consumer stream error", err));
+
+for await (const message of stream) {
+  console.log(`${message.topic}[${message.partition}]@${message.offset}: ${message.value}`);
+}
+```
+
+Use `{ objectMode: true }` on the write stream to pass `{ topic, partition, key, value, headers }` objects, `streamAsBatch: true` on the read stream to receive arrays, and `stream.consumer` / `stream.producer` to reach the underlying client (e.g. `stream.consumer.commit()`).
+
+All six snippets above were verified against a real broker before being committed to this README. Configuration is librdkafka's own property set, passed through unmodified — see the [librdkafka configuration reference](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md).
 
 ## Performance
 
-Measured against `@confluentinc/kafka-javascript` 1.10.0 on Node 24 (same machine, same broker, identical librdkafka 2.15.0 configuration, 3-run medians; full method and raw data in [`bench/RESULTS.md`](./bench/RESULTS.md)):
+Measured against `@confluentinc/kafka-javascript` 1.10.0 on Node 24 (same machine, same broker, identical librdkafka 2.15.0 configuration; all seven cases from one benchmarking session on the current code, 3-run medians — full method and raw data in [`bench/RESULTS.md`](./bench/RESULTS.md), section "Final consolidated run"):
 
 | Case | bun-rdkafka / Bun | upstream / Node 24 | Ratio |
 |---|---:|---:|---:|
-| producer, 100 B, acks=1 | 1,041,241 msg/s | 722,873 | **1.44×** |
-| producer, 100 B, acks=all | 977,427 msg/s | 676,209 | **1.45×** |
-| producer, 1 KB, acks=1 | 439,613 msg/s | 593,242 | 0.74× |
-| producer, 1 KB, acks=all | 450,779 msg/s | 579,320 | 0.78× |
-| consumer, 100 B | 1,009,890 msg/s | 411,854 | **2.45×** |
-| consumer, 1 KB | 668,644 msg/s | 281,888 | **2.37×** |
+| producer, 100 B, acks=1 | 981,760 msg/s | 668,537 | **1.47×** |
+| producer, 100 B, acks=all | 914,716 msg/s | 664,739 | **1.38×** |
+| producer, 1 KB, acks=1 | 408,700 msg/s | 646,153 | 0.63× |
+| producer, 1 KB, acks=all | 517,344 msg/s | 638,564 | 0.81× |
+| consumer, 100 B | 1,010,779 msg/s | 408,069 | **2.48×** |
+| consumer, 1 KB | 671,952 msg/s | 270,955 | **2.48×** |
 | e2e latency p50/p99 @10k msg/s | 4 / 6 ms | 2 / 3 ms | — |
 
 Honest caveats:
 
 - Benchmarked on a 4-vCPU / 3 GB box with the broker co-located, so absolute numbers are compressed; ratios are the meaningful signal.
-- The 1 KB producer case is an *unbounded-burst microbenchmark* where bun-rdkafka currently loses: enqueueing the whole 600 MB burst near-instantly defeats pipeline overlap on shared CPUs. With a bounded queue (`queue.buffering.max.messages=65536`, closer to production configs) the same case reaches parity or better. Analysis and follow-ups in `bench/RESULTS.md` §M6d.
+- The 1 KB producer case is an *unbounded-burst microbenchmark* where bun-rdkafka currently loses (0.63–0.81× across sessions, with high run-to-run variance): enqueueing the whole 600 MB burst near-instantly defeats pipeline overlap on shared CPUs. With a bounded queue (`queue.buffering.max.messages=65536`, closer to production configs) the same case reaches parity or better. Analysis and follow-ups in `bench/RESULTS.md` §M6d.
 - Latency p99 is single-digit ms but roughly 2× upstream — the inherent cost of the poll-based event model. Tune `js.poll.idle.max.ms` down if latency matters more than idle CPU.
 
 ## Platform support
 
-| Target | Build config | Tested |
+| Target | Prebuilt binary | Tested |
 |---|---|---|
-| linux-x64 (glibc ≥ 2.28) | ✅ | ✅ full test suite + benchmarks, real broker |
-| linux-arm64 (glibc ≥ 2.28) | ✅ CI matrix ready | ⏳ pending first CI run |
-| darwin-arm64 (macOS ≥ 12) | ✅ CI matrix ready | ⏳ pending first CI run |
-| darwin-x64 (macOS ≥ 12) | ✅ CI matrix ready | ⏳ pending first CI run |
-| win32-x64 (MSVC, vcpkg) | ✅ CI matrix ready | ⏳ pending first CI run |
+| linux-x64 (glibc ≥ 2.28) | ✅ CI release asset (`linux-x64-gnu`, static OpenSSL/zlib/zstd/lz4 — depends only on glibc) | ✅ full unit + integration suite and benchmarks against a real broker; CI `verify-native` gate (dlopen + `ldd` + `builtin.features`) |
+| win32-x64 (MSVC, vcpkg) | ✅ CI release asset (`win32-x64`) | ⚠️ builds green in CI; not yet exercised against a broker on Windows |
+| linux-arm64 (glibc) | ❌ source build (postinstall fallback) | ⏳ not tested |
+| darwin-arm64 / darwin-x64 (macOS ≥ 12) | ❌ source build (postinstall fallback) | ⏳ not tested |
+| linux-x64 musl (Alpine) | ❌ source build (postinstall fallback) | ⏳ not tested |
 
-Prebuilt binaries for all five targets are built by CI and attached to every [GitHub Release](https://github.com/vnStrawHat/bun-rdkafka/releases); the postinstall script picks the right one (see [Install](#install)). Platforms without a prebuilt (e.g. musl/Alpine) fall back to the source build automatically.
+Prebuilt binaries for the two Tier-1 targets are built by CI and attached to every [GitHub Release](https://github.com/vnStrawHat/bun-rdkafka/releases); the postinstall script picks the matching one (see [Install](#install)). On every other platform the installer falls back to the source build automatically — you need `cmake` and a C compiler; librdkafka is fetched and statically linked during the build. Contributions of prebuilt matrix entries (arm64/darwin) are welcome once we have CI runners to test them.
 
 ## Tuning notes
 
