@@ -73,4 +73,9 @@ export type {
   KafkaJSMessage,
   TopicPartition,
   TopicPartitionOffset,
+  TopicPartitionOffsetAndMetadata,
+  CommittedOffset,
+  AssignmentFns,
+  RebalanceAssignment,
+  RebalanceCallback,
 } from "./consumer.ts";

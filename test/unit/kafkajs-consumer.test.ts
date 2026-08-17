@@ -17,7 +17,18 @@ interface PendingConsume {
   cb: (err: null, messages: Message[]) => void;
 }
 
+type RebalanceCb = (err: LibrdKafkaError, parts: { topic: string; partition: number }[]) => void;
+
 class FakeInner extends EventEmitter {
+  /** The `rebalance_cb` trampoline the KafkaJS layer installs on the conf. */
+  rebalanceCb: RebalanceCb | undefined;
+  assigns: unknown[][] = [];
+  incrementalAssigns: unknown[][] = [];
+  unassigns = 0;
+  incrementalUnassigns: unknown[][] = [];
+  protocol: "NONE" | "EAGER" | "COOPERATIVE" = "EAGER";
+  lost = false;
+  name = "consumer#fake";
   feed: Message[] = [];
   stored: { topic: string; partition: number; offset: number }[] = [];
   seeks: { topic: string; partition: number; offset: number }[] = [];
@@ -108,6 +119,50 @@ class FakeInner extends EventEmitter {
     return this.assigned;
   }
 
+  isConnected(): boolean {
+    return true;
+  }
+
+  rebalanceProtocol(): "NONE" | "EAGER" | "COOPERATIVE" {
+    return this.protocol;
+  }
+
+  assignmentLost(): boolean {
+    return this.lost;
+  }
+
+  assign(list: { topic: string; partition: number; offset?: number }[]): this {
+    this.assigns.push(list);
+    this.assigned = list.map((tp) => ({ topic: tp.topic, partition: tp.partition }));
+    return this;
+  }
+
+  incrementalAssign(list: { topic: string; partition: number; offset?: number }[]): this {
+    this.incrementalAssigns.push(list);
+    this.assigned.push(...list.map((tp) => ({ topic: tp.topic, partition: tp.partition })));
+    return this;
+  }
+
+  unassign(): this {
+    this.unassigns++;
+    this.assigned = [];
+    return this;
+  }
+
+  incrementalUnassign(list: { topic: string; partition: number }[]): this {
+    this.incrementalUnassigns.push(list);
+    return this;
+  }
+
+  /** Simulates a rebalance event reaching the KafkaJS layer through its rebalance_cb. */
+  rebalance(code: number, parts: { topic: string; partition: number }[]): void {
+    const err = new LibrdKafkaError(
+      code === ERROR_CODES.ERR__ASSIGN_PARTITIONS ? "assign" : "revoke",
+      { code, origin: "local" },
+    );
+    this.rebalanceCb?.(err, parts);
+  }
+
   getWatermarkOffsets(_topic: string, _partition: number): { lowOffset: number; highOffset: number } {
     return { lowOffset: 0, highOffset: this.highWatermark };
   }
@@ -126,14 +181,20 @@ function msg(topic: string, partition: number, offset: number, value = `v${offse
 }
 
 function makeConsumer(
-  opts: { autoCommit?: boolean; maxBatch?: number } = {},
+  opts: { autoCommit?: boolean; maxBatch?: number; raw?: Record<string, unknown> } = {},
 ): { consumer: Consumer; inner: FakeInner } {
   const inner = new FakeInner();
   const raw: Record<string, unknown> = {
     kafkaJS: { groupId: "g", brokers: ["b:9092"], autoCommit: opts.autoCommit ?? true },
+    ...opts.raw,
   };
   if (opts.maxBatch !== undefined) raw["js.consumer.max.batch.size"] = opts.maxBatch;
-  const consumer = new Consumer(raw, { inner: inner as unknown as KafkaConsumer });
+  const consumer = new Consumer(raw, {
+    inner: (conf) => {
+      inner.rebalanceCb = conf["rebalance_cb"] as RebalanceCb;
+      return inner as unknown as KafkaConsumer;
+    },
+  });
   return { consumer, inner };
 }
 
@@ -295,13 +356,11 @@ describe("KafkaJS Consumer — scheduler", () => {
     await consumer.run({ eachMessage: async () => {} });
     consumer.seek({ topic: "t", partition: 3, offset: 7 });
     expect(inner.seeks).toHaveLength(0);
-    inner.emit(
-      "rebalance",
-      new LibrdKafkaError("assign", { code: ERROR_CODES.ERR__ASSIGN_PARTITIONS, origin: "local" }),
-      [{ topic: "t", partition: 3 }],
-    );
+    inner.rebalance(ERROR_CODES.ERR__ASSIGN_PARTITIONS, [{ topic: "t", partition: 3 }]);
     await settle(5);
-    expect(inner.seeks).toContainEqual({ topic: "t", partition: 3, offset: 7 });
+    // The pending seek is folded into the assign call as the start offset (no seek round-trip).
+    expect(inner.assigns).toEqual([[{ topic: "t", partition: 3, offset: 7 }]]);
+    expect(inner.seeks).toHaveLength(0);
     await consumer.stop();
   });
 
@@ -316,11 +375,7 @@ describe("KafkaJS Consumer — scheduler", () => {
     });
     inner.push(msg("t", 0, 0));
     await settle(10);
-    inner.emit(
-      "rebalance",
-      new LibrdKafkaError("revoke", { code: ERROR_CODES.ERR__REVOKE_PARTITIONS, origin: "local" }),
-      [{ topic: "t", partition: 0 }],
-    );
+    inner.rebalance(ERROR_CODES.ERR__REVOKE_PARTITIONS, [{ topic: "t", partition: 0 }]);
     release = true;
     await settle();
     expect(inner.stored).toHaveLength(0);
