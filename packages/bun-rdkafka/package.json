@@ -1,6 +1,6 @@
 {
   "name": "@vnstrawhat/bun-rdkafka",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Bun-native Apache Kafka client — librdkafka via bun:ffi, API compatible with confluent-kafka-javascript",
   "license": "MIT",
   "type": "module",

@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.2.2 (2026-08-17)
+
+### Bug Fixes
+
+- **types:** emit the librdkafka property range as text, not an unknown @range tag
+
+### Performance
+
+- **consumer:** single-partition offset store without a tpl round-trip
+- **consumer:** fresh buffer per batch with message views, faster decoder, O(1) FIFO
+- **scheduler:** setImmediate for HOT macrotask breaks, hold 1 ms cadence after data
+- **native:** serialize consumed messages straight into the out buffer
+
+### Documentation
+
+- **bench:** consume path optimizations — results, README tables, ADR-6 update
+- refresh the README bench table to the latest full session; walk the v1.0 checklist
+
+### Maintenance
+
+- give the FinalizationRegistry safety-net test up to 2 s of forced GCs
+- integration job — full test/integration against a real KRaft broker on the release artifact
+- **loader:** check lazy native loading in a fresh process
+
+**Full diff:** [v0.2.1...v0.2.2](https://github.com/vnStrawHat/bun-rdkafka/compare/v0.2.1...v0.2.2)
+
 ## v0.2.1 (2026-08-17)
 
 ### Features
