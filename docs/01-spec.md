@@ -145,12 +145,14 @@ Minimum Bun: **1.2** (stable `bun:ffi`, `dlopen`, `FinalizationRegistry`).
 
 ## 8. v1.0 acceptance criteria
 
-- [ ] All of FR-1..FR-4 complete; API surface verified by a conformance test cross-checked against confluent-kafka-javascript's `.d.ts`.
-- [ ] Integration tests (producer/consumer/admin/transactions/oauthbearer) green on CI against a real broker (Apache Kafka KRaft container) for linux-x64.
-- [ ] In-repo benchmark demonstrating G3, results published in `bench/RESULTS.md`.
-- [ ] `bun add @vnstrawhat/bun-rdkafka` on a clean machine for both Tier-1 prebuilt targets → the producer + consumer examples run; one source-build-fallback check on a Tier-2 platform.
-- [ ] Release pipeline: one dispatch/tag → CI builds the prebuilt binaries, creates a GitHub Release, publishes the npm package, automated and idempotent.
-- [ ] Documentation: README, API docs (typedoc), MIGRATION.md from confluent-kafka-javascript (~"change the import and you're done" + a table of differences if any).
+Status walked 2026-08-17 (v0.2.1):
+
+- [x] All of FR-1..FR-4 complete; API surface verified by a conformance test cross-checked against confluent-kafka-javascript's `.d.ts` (`test/conformance/`, exclusions documented in MIGRATION.md §3–4).
+- [x] Integration tests (producer/consumer/admin/transactions/oauthbearer) green on CI against a real broker (Apache Kafka KRaft container) for linux-x64 — `integration` job in `ci.yml` (added 2026-08-17; green locally: 522 tests).
+- [x] In-repo benchmark demonstrating G3, results published in `bench/RESULTS.md` (G3 met for producer 100 B and both consumer cases; producer 1 KB roughly at parity — see the honest caveats in README "Performance").
+- [ ] `bun add @vnstrawhat/bun-rdkafka` on a clean machine for both Tier-1 prebuilt targets → the producer + consumer examples run; one source-build-fallback check on a Tier-2 platform. **Open:** linux-x64 verified (install-script test + release smoke); win32-x64 builds and ships but has not been exercised against a broker; no Tier-2 source-build check yet.
+- [x] Release pipeline: one dispatch/tag → CI builds the prebuilt binaries, creates a GitHub Release, publishes the npm package, automated and idempotent (`release.yml`; v0.1.x–v0.2.1 released through it).
+- [x] Documentation: README, API docs (typedoc), MIGRATION.md from confluent-kafka-javascript ("change the import" + the table of differences).
 
 ## 9. Key risks
 

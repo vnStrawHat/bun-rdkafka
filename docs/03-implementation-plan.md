@@ -198,18 +198,24 @@ binary protocol, the PollScheduler, no event-loop blocking, no crashes.
 
 ## M8 — Documentation & v1.0 (1 week)
 
-- [ ] **Convert everything to English** (requirement settled 2026-08-14): docs/ (spec,
-      design, plan), `bunrdkafka.h` + C shim comments, TypeScript doc comments, test
-      comments, bench/RESULTS.md. New code/docs from M6d onward are written in English
-      directly.
-- [ ] README (quick start, comparison with upstream — including the fact that upstream does not run on Bun 1.4 and the M6 bench table), typedoc API site, MIGRATION.md from confluent-kafka-javascript, CONTRIBUTING (local native build, running integration).
+- [x] **Convert everything to English** (requirement settled 2026-08-14; verified 2026-08-17:
+      no non-ASCII Vietnamese left in docs/, native/, src/, test/, bench/).
+- [x] README (quick start in all three styles, upstream comparison + bench table, `js.*`
+      configuration reference), typedoc API site (`bun run docs:api`, 0 errors),
+      MIGRATION.md, CONTRIBUTING (native build, tests, `gen:config`).
+- [x] Typed public API (2026-08-17, v0.2.1): typed events (`Client<Events>`), typed
+      constructor configs generated from librdkafka's CONFIGURATION.md + `js.*` + callbacks,
+      typed `kafkaJS` block / `*ConstructorConfig` (upstream names).
+- [x] CI integration job (2026-08-17): `test/integration` against a real KRaft broker on the
+      linux-x64-gnu release artifact — spec §8 item 2.
 - [x] Callback API gaps closed (2026-08-17, ABI 2): `features()` + upstream-style default
       export, `event_cb` → `event.event`, `connection.failure`, `warning`, JS-side
       `partitioner_cb`, `HighLevelProducer.setTopic{Key,Value}Serializer`,
       `KafkaConsumer.offsetsForTimes`, `Client.getLastError()`. Still excluded (not
       applicable to bun:ffi): `getClient`, `setPollInBackground`, `setDefaultConsumeLoopTimeoutDelay`.
 - [x] Stream API landed (2026-08-17): `Producer.createWriteStream` / `KafkaConsumer.createReadStream` + module-level `createReadStream`/`createWriteStream` (`ProducerStream` / `ConsumerStream` over `node:stream`), conformance exclusions removed, unit + integration tests, `examples/streams.ts`.
-- [ ] Re-walk the v1.0 acceptance checklist in spec §8; close remaining differences or record them publicly.
+- [ ] Re-walk the v1.0 acceptance checklist in spec §8 (walked 2026-08-17 — see the ticks and
+      the two open items there: win32-x64 against a live broker, Tier-2 source-build check).
 - [x] KafkaJS API gaps closed (2026-08-17): `Consumer.committed()/storeOffsets()/logger()/
       dependentAdmin()/_getInternalClient()`, `pause()` returns a resume fn, `rebalance_cb`
       with `assignmentFns` (upstream semantics), `producer.sendOffsets({consumer})` works with

@@ -193,22 +193,23 @@ All six snippets above were verified against a real broker before being committe
 
 ## Performance
 
-Measured against `@confluentinc/kafka-javascript` 1.10.0 on Node 24 (same machine, same broker, identical librdkafka 2.15.0 configuration; all seven cases from one benchmarking session on the current code, 3-run medians — full method and raw data in [`bench/RESULTS.md`](./bench/RESULTS.md), section "Final consolidated run"):
+Measured against `@confluentinc/kafka-javascript` 1.10.0 on Node 24 (same machine, same broker, identical librdkafka 2.15.0 configuration; all seven cases from one benchmarking session on the current code, 3-run medians — full method and raw data in [`bench/RESULTS.md`](./bench/RESULTS.md), section "Consumer prefetch thread", which is the latest full session):
 
 | Case | bun-rdkafka / Bun | upstream / Node 24 | Ratio |
 |---|---:|---:|---:|
-| producer, 100 B, acks=1 | 981,760 msg/s | 668,537 | **1.47×** |
-| producer, 100 B, acks=all | 914,716 msg/s | 664,739 | **1.38×** |
-| producer, 1 KB, acks=1 | 408,700 msg/s | 646,153 | 0.63× |
-| producer, 1 KB, acks=all | 517,344 msg/s | 638,564 | 0.81× |
-| consumer, 100 B | 1,010,779 msg/s | 408,069 | **2.48×** |
-| consumer, 1 KB | 671,952 msg/s | 270,955 | **2.48×** |
+| producer, 100 B, acks=1 | 1,084,103 msg/s | 743,556 | **1.46×** |
+| producer, 100 B, acks=all | 1,028,990 msg/s | 727,555 | **1.41×** |
+| producer, 1 KB, acks=1 | 592,906 msg/s | 590,276 | 1.00× |
+| producer, 1 KB, acks=all | 648,041 msg/s | 660,349 | 0.98× |
+| consumer, 100 B | 997,499 msg/s (1,256,128 with `js.consume.prefetch`) | 411,091 | **2.43×** (3.06×) |
+| consumer, 1 KB | 677,664 msg/s (863,998 with `js.consume.prefetch`) | 278,685 | **2.43×** (3.10×) |
 | e2e latency p50/p99 @10k msg/s | 4 / 6 ms | 2 / 3 ms | — |
 
 Honest caveats:
 
 - Benchmarked on a 4-vCPU / 3 GB box with the broker co-located, so absolute numbers are compressed; ratios are the meaningful signal.
-- The 1 KB producer case is an *unbounded-burst microbenchmark* where bun-rdkafka currently loses (0.63–0.81× across sessions, with high run-to-run variance): enqueueing the whole 600 MB burst near-instantly defeats pipeline overlap on shared CPUs. With a bounded queue (`queue.buffering.max.messages=65536`, closer to production configs) the same case reaches parity or better. Analysis and follow-ups in `bench/RESULTS.md` §M6d.
+- The 1 KB producer case is an *unbounded-burst microbenchmark* with high session-to-session variance on this box: earlier sessions measured 0.63–0.81× (see `bench/RESULTS.md` §M6d for the analysis), the latest session — on a freshly recreated broker with topics deleted between cases — measures parity. Treat it as "roughly on par", not as a win.
+- `js.consume.prefetch` (experimental, opt-in) buys the extra consumer throughput with a second thread — +26–33 % throughput for +33–40 % CPU; see the [configuration table](#configuration-js-options).
 - Latency p99 is single-digit ms but roughly 2× upstream — the inherent cost of the poll-based event model. Tune `js.poll.idle.max.ms` down if latency matters more than idle CPU.
 
 ## Platform support
