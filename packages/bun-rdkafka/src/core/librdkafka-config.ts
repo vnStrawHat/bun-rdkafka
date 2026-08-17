@@ -38,40 +38,45 @@ export type GlobalConfig = {
   /**
    * Maximum Kafka protocol request message size. Due to differing framing overhead between protocol versions the producer is unable to reliably enforce a strict max message limit at produce time and may exceed the maximum size by one message in protocol ProduceRequests, the broker will enforce the the topic's `max.message.bytes` limit (see Apache Kafka documentation).
    *
+   * Range: `1000 .. 1000000000`
+   *
    * @default 1000000
-   * @range 1000 .. 1000000000
    */
   "message.max.bytes"?: number;
 
   /**
    * Maximum size for message to be copied to buffer. Messages larger than this will be passed by reference (zero-copy) at the expense of larger iovecs. This property is not supported for share consumers.
    *
+   * Range: `0 .. 1000000000`
+   *
    * @default 65535
-   * @range 0 .. 1000000000
    */
   "message.copy.max.bytes"?: number;
 
   /**
    * Maximum Kafka protocol response message size. This serves as a safety precaution to avoid memory exhaustion in case of protocol hickups. This value must be at least `fetch.max.bytes`  + 512 to allow for protocol overhead; the value is adjusted automatically unless the configuration property is explicitly set. For share consumers, the default value is INT_MAX.
    *
+   * Range: `1000 .. 2147483647`
+   *
    * @default 100000000
-   * @range 1000 .. 2147483647
    */
   "receive.message.max.bytes"?: number;
 
   /**
    * Maximum number of in-flight requests per broker connection. This is a generic property applied to all broker communication, however it is primarily relevant to produce requests. In particular, note that other mechanisms limit the number of outstanding consumer fetch request per broker to one. This property is ignored for share consumers.
    *
+   * Range: `1 .. 1000000`
+   *
    * @default 1000000
-   * @range 1 .. 1000000
    */
   "max.in.flight.requests.per.connection"?: number;
 
   /**
    * Alias for `max.in.flight.requests.per.connection`: Maximum number of in-flight requests per broker connection. This is a generic property applied to all broker communication, however it is primarily relevant to produce requests. In particular, note that other mechanisms limit the number of outstanding consumer fetch request per broker to one. This property is ignored for share consumers.
    *
+   * Range: `1 .. 1000000`
+   *
    * @default 1000000
-   * @range 1 .. 1000000
    */
   "max.in.flight"?: number;
 
@@ -85,40 +90,45 @@ export type GlobalConfig = {
   /**
    * If a client configured to rebootstrap using `metadata.recovery.strategy=rebootstrap` is unable to obtain metadata from any of the brokers for this interval, client repeats the bootstrap process using `bootstrap.servers` configuration and brokers added through `rd_kafka_brokers_add()`.
    *
+   * Range: `0 .. 2147483647`
+   *
    * @default 300000
-   * @range 0 .. 2147483647
    */
   "metadata.recovery.rebootstrap.trigger.ms"?: number;
 
   /**
    * Period of time in milliseconds at which topic and broker metadata is refreshed in order to proactively discover any new brokers, topics, partitions or partition leader changes. Use -1 to disable the intervalled refresh (not recommended). If there are no locally referenced topics (no topic objects created, no messages produced, no subscription or no assignment) then only the broker list will be refreshed every interval but no more often than every 10s.
    *
+   * Range: `-1 .. 3600000`
+   *
    * @default 300000
-   * @range -1 .. 3600000
    */
   "topic.metadata.refresh.interval.ms"?: number;
 
   /**
    * Metadata cache max age. Defaults to topic.metadata.refresh.interval.ms * 3
    *
+   * Range: `1 .. 86400000`
+   *
    * @default 900000
-   * @range 1 .. 86400000
    */
   "metadata.max.age.ms"?: number;
 
   /**
    * When a topic loses its leader a new metadata request will be enqueued immediately and then with this initial interval, exponentially increasing upto `retry.backoff.max.ms`, until the topic metadata has been refreshed. If not set explicitly, it will be defaulted to `retry.backoff.ms`. This is used to recover quickly from transitioning leader brokers.
    *
+   * Range: `1 .. 60000`
+   *
    * @default 100
-   * @range 1 .. 60000
    */
   "topic.metadata.refresh.fast.interval.ms"?: number;
 
   /**
    * **DEPRECATED** No longer used.
    *
+   * Range: `0 .. 1000`
+   *
    * @default 10
-   * @range 0 .. 1000
    */
   "topic.metadata.refresh.fast.cnt"?: number;
 
@@ -132,8 +142,9 @@ export type GlobalConfig = {
   /**
    * Apache Kafka topic creation is asynchronous and it takes some time for a new topic to propagate throughout the cluster to all brokers. If a client requests topic metadata after manual topic creation but before the topic has been fully propagated to the broker the client is requesting metadata from, the topic will seem to be non-existent and the client will mark the topic as such, failing queued produced messages with `ERR__UNKNOWN_TOPIC`. This setting delays marking a topic as non-existent until the configured propagation max time has passed. The maximum propagation time is calculated from the time the topic is first referenced in the client, e.g., on produce().
    *
+   * Range: `0 .. 3600000`
+   *
    * @default 30000
-   * @range 0 .. 3600000
    */
   "topic.metadata.propagation.max.ms"?: number;
 
@@ -144,39 +155,44 @@ export type GlobalConfig = {
 
   /**
    * A comma-separated list of debug contexts to enable. Detailed Producer debugging: broker,topic,msg. Consumer: consumer,cgrp,topic,fetch
-   * @range generic, broker, topic, metadata, feature, queue, msg, protocol, cgrp, security, fetch, interceptor, plugin, consumer, admin, eos, mock, assignor, conf, telemetry, all
+   *
+   * Range: `generic, broker, topic, metadata, feature, queue, msg, protocol, cgrp, security, fetch, interceptor, plugin, consumer, admin, eos, mock, assignor, conf, telemetry, all`
    */
   "debug"?: string;
 
   /**
    * Default timeout for network requests. Producer: ProduceRequests will use the lesser value of `socket.timeout.ms` and remaining `message.timeout.ms` for the first message in the batch. Consumer: FetchRequests will use `fetch.wait.max.ms` + `socket.timeout.ms`. Admin: Admin requests will use `socket.timeout.ms` or explicitly set `rd_kafka_AdminOptions_set_operation_timeout()` value.
    *
+   * Range: `10 .. 300000`
+   *
    * @default 60000
-   * @range 10 .. 300000
    */
   "socket.timeout.ms"?: number;
 
   /**
    * **DEPRECATED** No longer used.
    *
+   * Range: `1 .. 60000`
+   *
    * @default 1000
-   * @range 1 .. 60000
    */
   "socket.blocking.max.ms"?: number;
 
   /**
    * Broker socket send buffer size. System default is used if 0.
    *
+   * Range: `0 .. 100000000`
+   *
    * @default 0
-   * @range 0 .. 100000000
    */
   "socket.send.buffer.bytes"?: number;
 
   /**
    * Broker socket receive buffer size. System default is used if 0.
    *
+   * Range: `0 .. 100000000`
+   *
    * @default 0
-   * @range 0 .. 100000000
    */
   "socket.receive.buffer.bytes"?: number;
 
@@ -197,16 +213,18 @@ export type GlobalConfig = {
   /**
    * Disconnect from broker when this number of send failures (e.g., timed out requests) is reached. Disable with 0. WARNING: It is highly recommended to leave this setting at its default value of 1 to avoid the client and broker to become desynchronized in case of request timeouts. NOTE: The connection is automatically re-established.
    *
+   * Range: `0 .. 1000000`
+   *
    * @default 1
-   * @range 0 .. 1000000
    */
   "socket.max.fails"?: number;
 
   /**
    * How long to cache the broker address resolving results (milliseconds).
    *
+   * Range: `0 .. 86400000`
+   *
    * @default 1000
-   * @range 0 .. 86400000
    */
   "broker.address.ttl"?: number;
 
@@ -220,64 +238,72 @@ export type GlobalConfig = {
   /**
    * Maximum time allowed for broker connection setup (TCP connection setup as well SSL and SASL handshake). If the connection to the broker is not fully functional after this the connection will be closed and retried.
    *
+   * Range: `1000 .. 2147483647`
+   *
    * @default 30000
-   * @range 1000 .. 2147483647
    */
   "socket.connection.setup.timeout.ms"?: number;
 
   /**
    * Close broker connections after the specified time of inactivity. Disable with 0. For share consumers, the default value is 540000 (9 mins).If this property is left at its default value some heuristics are performed to determine a suitable default value, this is currently limited to identifying brokers on Azure (see librdkafka issue #3109 for more info). Actual value can be lower, up to 2s lower, only if `connections.max.idle.ms` >= 4s, as jitter is added to avoid disconnecting all brokers at the same time.
    *
+   * Range: `0 .. 2147483647`
+   *
    * @default 0
-   * @range 0 .. 2147483647
    */
   "connections.max.idle.ms"?: number;
 
   /**
    * **DEPRECATED** No longer used. See `reconnect.backoff.ms` and `reconnect.backoff.max.ms`.
    *
+   * Range: `0 .. 3600000`
+   *
    * @default 0
-   * @range 0 .. 3600000
    */
   "reconnect.backoff.jitter.ms"?: number;
 
   /**
    * The initial time to wait before reconnecting to a broker after the connection has been closed. The time is increased exponentially until `reconnect.backoff.max.ms` is reached. -25% to +50% jitter is applied to each reconnect backoff. A value of 0 disables the backoff and reconnects immediately. For share consumers, the default value is 50.
    *
+   * Range: `0 .. 3600000`
+   *
    * @default 100
-   * @range 0 .. 3600000
    */
   "reconnect.backoff.ms"?: number;
 
   /**
    * The maximum time to wait before reconnecting to a broker after the connection has been closed. For share consumers, the default value is 1000.
    *
+   * Range: `0 .. 3600000`
+   *
    * @default 10000
-   * @range 0 .. 3600000
    */
   "reconnect.backoff.max.ms"?: number;
 
   /**
    * librdkafka statistics emit interval. The application also needs to register a stats callback using `rd_kafka_conf_set_stats_cb()`. The granularity is 1000ms. A value of 0 disables statistics.
    *
+   * Range: `0 .. 86400000`
+   *
    * @default 0
-   * @range 0 .. 86400000
    */
   "statistics.interval.ms"?: number;
 
   /**
    * See `rd_kafka_conf_set_events()`
    *
+   * Range: `0 .. 2147483647`
+   *
    * @default 0
-   * @range 0 .. 2147483647
    */
   "enabled_events"?: number;
 
   /**
    * Logging level (syslog(3) levels)
    *
+   * Range: `0 .. 7`
+   *
    * @default 6
-   * @range 0 .. 7
    */
   "log_level"?: number;
 
@@ -312,8 +338,9 @@ export type GlobalConfig = {
   /**
    * Signal that librdkafka will use to quickly terminate on rd_kafka_destroy(). If this signal is not set then there will be a delay before rd_kafka_wait_destroyed() returns true as internal threads are timing out their system calls. If this signal is set however the delay will be minimal. The application should mask this signal as an internal signal handler is installed.
    *
+   * Range: `0 .. 128`
+   *
    * @default 0
-   * @range 0 .. 128
    */
   "internal.termination.signal"?: number;
 
@@ -327,16 +354,18 @@ export type GlobalConfig = {
   /**
    * Timeout for broker API version requests.
    *
+   * Range: `1 .. 300000`
+   *
    * @default 10000
-   * @range 1 .. 300000
    */
   "api.version.request.timeout.ms"?: number;
 
   /**
    * **DEPRECATED** **Post-deprecation actions: remove this configuration property, brokers < 0.10.0 won't be supported anymore in librdkafka 3.x.** Dictates how long the `broker.version.fallback` fallback is used in the case the ApiVersionRequest fails. **NOTE**: The ApiVersionRequest is only issued when a new connection to the broker is made (such as after an upgrade).
    *
+   * Range: `0 .. 604800000`
+   *
    * @default 0
-   * @range 0 .. 604800000
    */
   "api.version.fallback.ms"?: number;
 
@@ -517,8 +546,9 @@ export type GlobalConfig = {
   /**
    * Minimum time in milliseconds between key refresh attempts. Disable automatic key refresh by setting this property to 0.
    *
+   * Range: `0 .. 86400000`
+   *
    * @default 60000
-   * @range 0 .. 86400000
    */
   "sasl.kerberos.min.time.before.relogin"?: number;
 
@@ -635,8 +665,9 @@ export type GlobalConfig = {
   /**
    * Assertion expiration time in seconds. Only used when `sasl.oauthbearer.method` is set to "oidc" and JWT assertion is needed.
    *
+   * Range: `1 .. 2147483647`
+   *
    * @default 300
-   * @range 1 .. 2147483647
    */
   "sasl.oauthbearer.assertion.claim.exp.seconds"?: number;
 
@@ -655,8 +686,9 @@ export type GlobalConfig = {
   /**
    * Assertion not before time in seconds. Only used when `sasl.oauthbearer.method` is set to "oidc" and JWT assertion is needed.
    *
+   * Range: `0 .. 2147483647`
+   *
    * @default 60
-   * @range 0 .. 2147483647
    */
   "sasl.oauthbearer.assertion.claim.nbf.seconds"?: number;
 
@@ -690,16 +722,18 @@ export type GlobalConfig = {
   /**
    * The backoff time in milliseconds before retrying a protocol request, this is the first backoff time, and will be backed off exponentially until number of retries is exhausted, and it's capped by retry.backoff.max.ms.
    *
+   * Range: `1 .. 300000`
+   *
    * @default 100
-   * @range 1 .. 300000
    */
   "retry.backoff.ms"?: number;
 
   /**
    * The max backoff time in milliseconds before retrying a protocol request, this is the atmost backoff allowed for exponentially backed off requests.
    *
+   * Range: `1 .. 300000`
+   *
    * @default 1000
-   * @range 1 .. 300000
    */
   "retry.backoff.max.ms"?: number;
 
@@ -728,8 +762,9 @@ export type ProducerGlobalConfig = GlobalConfig & {
   /**
    * The maximum amount of time in milliseconds that the transaction coordinator will wait for a transaction status update from the producer before proactively aborting the ongoing transaction. If this value is larger than the `transaction.max.timeout.ms` setting in the broker, the init_transactions() call will fail with ERR_INVALID_TRANSACTION_TIMEOUT. The transaction timeout automatically adjusts `message.timeout.ms` and `socket.timeout.ms`, unless explicitly configured in which case they must not exceed the transaction timeout (`socket.timeout.ms` must be at least 100ms lower than `transaction.timeout.ms`). This is also the default timeout value if no timeout (-1) is supplied to the transactional API methods.
    *
+   * Range: `1000 .. 2147483647`
+   *
    * @default 60000
-   * @range 1000 .. 2147483647
    */
   "transaction.timeout.ms"?: number;
 
@@ -750,56 +785,63 @@ export type ProducerGlobalConfig = GlobalConfig & {
   /**
    * Maximum number of messages allowed on the producer queue. This queue is shared by all topics and partitions. A value of 0 disables this limit.
    *
+   * Range: `0 .. 2147483647`
+   *
    * @default 100000
-   * @range 0 .. 2147483647
    */
   "queue.buffering.max.messages"?: number;
 
   /**
    * Maximum total message size sum allowed on the producer queue. This queue is shared by all topics and partitions. This property has higher priority than queue.buffering.max.messages.
    *
+   * Range: `1 .. 2147483647`
+   *
    * @default 1048576
-   * @range 1 .. 2147483647
    */
   "queue.buffering.max.kbytes"?: number;
 
   /**
    * Delay in milliseconds to wait for messages in the producer queue to accumulate before constructing message batches (MessageSets) to transmit to brokers. A higher value allows larger and more effective (less overhead, improved compression) batches of messages to accumulate at the expense of increased message delivery latency.
    *
+   * Range: `0 .. 900000`
+   *
    * @default 5
-   * @range 0 .. 900000
    */
   "queue.buffering.max.ms"?: number;
 
   /**
    * Alias for `queue.buffering.max.ms`: Delay in milliseconds to wait for messages in the producer queue to accumulate before constructing message batches (MessageSets) to transmit to brokers. A higher value allows larger and more effective (less overhead, improved compression) batches of messages to accumulate at the expense of increased message delivery latency.
    *
+   * Range: `0 .. 900000`
+   *
    * @default 5
-   * @range 0 .. 900000
    */
   "linger.ms"?: number;
 
   /**
    * How many times to retry sending a failing Message. **Note:** retrying may cause reordering unless `enable.idempotence` is set to true.
    *
+   * Range: `0 .. 2147483647`
+   *
    * @default 2147483647
-   * @range 0 .. 2147483647
    */
   "message.send.max.retries"?: number;
 
   /**
    * Alias for `message.send.max.retries`: How many times to retry sending a failing Message. **Note:** retrying may cause reordering unless `enable.idempotence` is set to true.
    *
+   * Range: `0 .. 2147483647`
+   *
    * @default 2147483647
-   * @range 0 .. 2147483647
    */
   "retries"?: number;
 
   /**
    * The threshold of outstanding not yet transmitted broker requests needed to backpressure the producer's message accumulator. If the number of not yet transmitted requests equals or exceeds this number, produce request creation that would have otherwise been triggered (for example, in accordance with linger.ms) will be delayed. A lower number yields larger and more effective batches. A higher value can improve latency when using compression on slow machines.
    *
+   * Range: `1 .. 1000000`
+   *
    * @default 1
-   * @range 1 .. 1000000
    */
   "queue.buffering.backpressure.threshold"?: number;
 
@@ -820,16 +862,18 @@ export type ProducerGlobalConfig = GlobalConfig & {
   /**
    * Maximum number of messages batched in one MessageSet. The total MessageSet size is also limited by batch.size and message.max.bytes.
    *
+   * Range: `1 .. 1000000`
+   *
    * @default 10000
-   * @range 1 .. 1000000
    */
   "batch.num.messages"?: number;
 
   /**
    * Maximum size (in bytes) of all messages batched in one MessageSet, including protocol framing overhead. This limit is applied after the first message has been added to the batch, regardless of the first message's size, this is to ensure that messages that exceed batch.size are produced. The total MessageSet size is also limited by batch.num.messages and message.max.bytes.
    *
+   * Range: `1 .. 2147483647`
+   *
    * @default 1000000
-   * @range 1 .. 2147483647
    */
   "batch.size"?: number;
 
@@ -843,8 +887,9 @@ export type ProducerGlobalConfig = GlobalConfig & {
   /**
    * Delay in milliseconds to wait to assign new sticky partitions for each topic. By default, set to double the time of linger.ms. To disable sticky behavior, set to 0. This behavior affects messages with the key NULL in all cases, and messages with key lengths of zero when the consistent_random partitioner is in use. These messages would otherwise be assigned randomly. A higher value allows for more effective batching of these messages.
    *
+   * Range: `0 .. 900000`
+   *
    * @default 10
-   * @range 0 .. 900000
    */
   "sticky.partitioning.linger.ms"?: number;
 };
@@ -871,16 +916,18 @@ export type ConsumerGlobalConfig = GlobalConfig & {
   /**
    * Client group session and failure detection timeout. The consumer sends periodic heartbeats (heartbeat.interval.ms) to indicate its liveness to the broker. If no hearts are received by the broker for a group member within the session timeout, the broker will remove the consumer from the group and trigger a rebalance. The allowed range is configured with the **broker** configuration properties `group.min.session.timeout.ms` and `group.max.session.timeout.ms`. `session.timeout.ms` is not supported for `group.protocol=consumer`. It is set with the broker configuration property `group.consumer.session.timeout.ms` by default or can be configured through the AdminClient IncrementalAlterConfigs API. The allowed range is configured with the broker configuration properties `group.consumer.min.session.timeout.ms` and `group.consumer.max.session.timeout.ms`. Also see `max.poll.interval.ms`.
    *
+   * Range: `1 .. 3600000`
+   *
    * @default 45000
-   * @range 1 .. 3600000
    */
   "session.timeout.ms"?: number;
 
   /**
    * Group session keepalive heartbeat interval. `heartbeat.interval.ms` is not supported for `group.protocol=consumer`. It is set with the broker configuration property `group.consumer.heartbeat.interval.ms` by default or can be configured through the AdminClient IncrementalAlterConfigs API. The allowed range is configured with the broker configuration properties `group.consumer.min.heartbeat.interval.ms` and `group.consumer.max.heartbeat.interval.ms`.
    *
+   * Range: `1 .. 3600000`
+   *
    * @default 3000
-   * @range 1 .. 3600000
    */
   "heartbeat.interval.ms"?: number;
 
@@ -906,16 +953,18 @@ export type ConsumerGlobalConfig = GlobalConfig & {
   /**
    * How often to query for the current client group coordinator. If the currently assigned coordinator is down the configured query interval will be divided by ten to more quickly recover in case of coordinator reassignment.
    *
+   * Range: `1 .. 3600000`
+   *
    * @default 600000
-   * @range 1 .. 3600000
    */
   "coordinator.query.interval.ms"?: number;
 
   /**
    * Maximum allowed time between calls to consume messages (e.g., rd_kafka_consumer_poll()) for high-level consumers. If this interval is exceeded the consumer is considered failed and the group will rebalance in order to reassign the partitions to another consumer group member. Warning: Offset commits may be not possible at this point. Note: It is recommended to set `enable.auto.offset.store=false` for long-time processing applications and then explicitly store offsets (using offsets_store()) *after* message processing, to make sure offsets are not auto-committed prior to processing has finished. The interval is checked two times per second. See KIP-62 for more information.
    *
+   * Range: `1 .. 86400000`
+   *
    * @default 300000
-   * @range 1 .. 86400000
    */
   "max.poll.interval.ms"?: number;
 
@@ -929,8 +978,9 @@ export type ConsumerGlobalConfig = GlobalConfig & {
   /**
    * The frequency in milliseconds that the consumer offsets are committed (written) to offset storage. (0 = disable). This setting is used by the high-level consumer. This property is ignored for share consumers.
    *
+   * Range: `0 .. 86400000`
+   *
    * @default 5000
-   * @range 0 .. 86400000
    */
   "auto.commit.interval.ms"?: number;
 
@@ -944,72 +994,81 @@ export type ConsumerGlobalConfig = GlobalConfig & {
   /**
    * Minimum number of messages per topic+partition librdkafka tries to maintain in the local consumer queue. This property is not supported for share consumers.
    *
+   * Range: `1 .. 10000000`
+   *
    * @default 100000
-   * @range 1 .. 10000000
    */
   "queued.min.messages"?: number;
 
   /**
    * Maximum number of kilobytes of queued pre-fetched messages in the local consumer queue. If using the high-level consumer this setting applies to the single consumer queue, regardless of the number of partitions. When using the legacy simple consumer or when separate partition queues are used this setting applies per partition. This value may be overshot by fetch.message.max.bytes. This property has higher priority than queued.min.messages. This property is not supported for share consumers.
    *
+   * Range: `1 .. 2097151`
+   *
    * @default 65536
-   * @range 1 .. 2097151
    */
   "queued.max.messages.kbytes"?: number;
 
   /**
    * Maximum time the broker may wait to fill the Fetch response with fetch.min.bytes of messages.
    *
+   * Range: `0 .. 300000`
+   *
    * @default 500
-   * @range 0 .. 300000
    */
   "fetch.wait.max.ms"?: number;
 
   /**
    * How long to postpone the next fetch request for a topic+partition in case the current fetch queue thresholds (queued.min.messages or queued.max.messages.kbytes) have been exceded. This property may need to be decreased if the queue thresholds are set low and the application is experiencing long (~1s) delays between messages. Low values may increase CPU utilization. This property is not supported for share consumers.
    *
+   * Range: `0 .. 300000`
+   *
    * @default 1000
-   * @range 0 .. 300000
    */
   "fetch.queue.backoff.ms"?: number;
 
   /**
    * Initial maximum number of bytes per topic+partition to request when fetching messages from the broker. If the client encounters a message larger than this value it will gradually try to increase it until the entire message can be fetched. This property is ignored for share consumers.
    *
+   * Range: `1 .. 1000000000`
+   *
    * @default 1048576
-   * @range 1 .. 1000000000
    */
   "fetch.message.max.bytes"?: number;
 
   /**
    * Alias for `fetch.message.max.bytes`: Initial maximum number of bytes per topic+partition to request when fetching messages from the broker. If the client encounters a message larger than this value it will gradually try to increase it until the entire message can be fetched. This property is ignored for share consumers.
    *
+   * Range: `1 .. 1000000000`
+   *
    * @default 1048576
-   * @range 1 .. 1000000000
    */
   "max.partition.fetch.bytes"?: number;
 
   /**
    * Maximum amount of data the broker shall return for a Fetch request. Messages are fetched in batches by the consumer and if the first message batch in the first non-empty partition of the Fetch request is larger than this value, then the message batch will still be returned to ensure the consumer can make progress. The maximum message batch size accepted by the broker is defined via `message.max.bytes` (broker config) or `max.message.bytes` (broker topic config). For regular (not share) consumers, `fetch.max.bytes` is automatically adjusted upwards to be at least `message.max.bytes` (consumer config).
    *
+   * Range: `0 .. 2147483135`
+   *
    * @default 52428800
-   * @range 0 .. 2147483135
    */
   "fetch.max.bytes"?: number;
 
   /**
    * Minimum number of bytes the broker responds with. If fetch.wait.max.ms expires the accumulated data will be sent to the client regardless of this setting. For regular consumers, this value must be in range 1..100000000
    *
+   * Range: `0 .. 2147483647`
+   *
    * @default 1
-   * @range 0 .. 2147483647
    */
   "fetch.min.bytes"?: number;
 
   /**
    * How long to postpone the next fetch request for a topic+partition in case of a fetch error. This property is not supported for share consumers.
    *
+   * Range: `0 .. 300000`
+   *
    * @default 500
-   * @range 0 .. 300000
    */
   "fetch.error.backoff.ms"?: number;
 
@@ -1044,8 +1103,9 @@ export type ConsumerGlobalConfig = GlobalConfig & {
   /**
    * The maximum number of records returned in a single call to `rd_kafka_share_poll()`. This value is sent to the broker in the ShareFetch request and therefore bounds the number of records the broker acquires and returns per fetch. Note: this limit is currently best-effort and not strictly enforced, so a poll may occasionally return more records than this value. This property is only supported for share consumers.
    *
+   * Range: `1 .. 2147483647`
+   *
    * @default 500
-   * @range 1 .. 2147483647
    */
   "max.poll.records"?: number;
 
@@ -1067,40 +1127,45 @@ export type ProducerTopicConfig = TopicConfig & {
   /**
    * This field indicates the number of acknowledgements the leader broker must receive from ISR brokers before responding to the request: *0*=Broker does not send any response/ack to client, *-1* or *all*=Broker will block until message is committed by all in sync replicas (ISRs). If there are less than `min.insync.replicas` (broker configuration) in the ISR set the produce request will fail.
    *
+   * Range: `-1 .. 1000`
+   *
    * @default -1
-   * @range -1 .. 1000
    */
   "request.required.acks"?: number | "all";
 
   /**
    * Alias for `request.required.acks`: This field indicates the number of acknowledgements the leader broker must receive from ISR brokers before responding to the request: *0*=Broker does not send any response/ack to client, *-1* or *all*=Broker will block until message is committed by all in sync replicas (ISRs). If there are less than `min.insync.replicas` (broker configuration) in the ISR set the produce request will fail.
    *
+   * Range: `-1 .. 1000`
+   *
    * @default -1
-   * @range -1 .. 1000
    */
   "acks"?: number | "all";
 
   /**
    * The ack timeout of the producer request in milliseconds. This value is only enforced by the broker and relies on `request.required.acks` being != 0.
    *
+   * Range: `1 .. 900000`
+   *
    * @default 30000
-   * @range 1 .. 900000
    */
   "request.timeout.ms"?: number;
 
   /**
    * Local message timeout. This value is only enforced locally and limits the time a produced message waits for successful delivery. A time of 0 is infinite. This is the maximum time librdkafka may use to deliver a message (including retries). Delivery error occurs when either the retry count or the message timeout are exceeded. The message timeout is automatically adjusted to `transaction.timeout.ms` if `transactional.id` is configured.
    *
+   * Range: `0 .. 2147483647`
+   *
    * @default 300000
-   * @range 0 .. 2147483647
    */
   "message.timeout.ms"?: number;
 
   /**
    * Alias for `message.timeout.ms`: Local message timeout. This value is only enforced locally and limits the time a produced message waits for successful delivery. A time of 0 is infinite. This is the maximum time librdkafka may use to deliver a message (including retries). Delivery error occurs when either the retry count or the message timeout are exceeded. The message timeout is automatically adjusted to `transaction.timeout.ms` if `transactional.id` is configured.
    *
+   * Range: `0 .. 2147483647`
+   *
    * @default 300000
-   * @range 0 .. 2147483647
    */
   "delivery.timeout.ms"?: number;
 
@@ -1142,8 +1207,9 @@ export type ProducerTopicConfig = TopicConfig & {
   /**
    * Compression level parameter for algorithm selected by configuration property `compression.codec`. Higher values will result in better compression at the cost of more CPU usage. Usable range is algorithm-dependent: [0-9] for gzip; [0-12] for lz4; only 0 for snappy; -1 = codec-dependent default compression level.
    *
+   * Range: `-1 .. 12`
+   *
    * @default -1
-   * @range -1 .. 12
    */
   "compression.level"?: number;
 };
@@ -1167,8 +1233,9 @@ export type ConsumerTopicConfig = TopicConfig & {
   /**
    * [**LEGACY PROPERTY:** This setting is used by the simple legacy consumer only. When using the high-level KafkaConsumer, the global `auto.commit.interval.ms` property must be used instead]. The frequency in milliseconds that the consumer offsets are committed (written) to offset storage. This property is ignored for share consumers.
    *
+   * Range: `10 .. 86400000`
+   *
    * @default 60000
-   * @range 10 .. 86400000
    */
   "auto.commit.interval.ms"?: number;
 
@@ -1189,8 +1256,9 @@ export type ConsumerTopicConfig = TopicConfig & {
   /**
    * **DEPRECATED** fsync() interval for the offset file, in milliseconds. Use -1 to disable syncing, and 0 for immediate sync after each write. File-based offset storage will be removed in a future version.
    *
+   * Range: `-1 .. 86400000`
+   *
    * @default -1
-   * @range -1 .. 86400000
    */
   "offset.store.sync.interval.ms"?: number;
 
@@ -1204,8 +1272,9 @@ export type ConsumerTopicConfig = TopicConfig & {
   /**
    * Maximum number of messages to dispatch in one `rd_kafka_consume_callback*()` call (0 = unlimited). This property is not supported for share consumers.
    *
+   * Range: `0 .. 1000000`
+   *
    * @default 0
-   * @range 0 .. 1000000
    */
   "consume.callback.max.messages"?: number;
 };

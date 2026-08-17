@@ -94,8 +94,10 @@ function jsdoc(p: Prop): string {
   const lines: string[] = [];
   const desc = p.description.replace(/\*\//g, "*\\/");
   lines.push(desc);
+  // Plain text (before the block tag, which would otherwise swallow it) rather than a
+  // custom @range tag: TypeDoc warns on unknown block tags.
+  if (p.range !== "" && p.type !== "enum value" && p.type !== "boolean") lines.push("", `Range: \`${p.range}\``);
   if (p.def !== "") lines.push("", `@default ${p.def}`);
-  if (p.range !== "" && p.type !== "enum value" && p.type !== "boolean") lines.push(`@range ${p.range}`);
   return ["  /**", ...lines.map((l) => (l === "" ? "   *" : `   * ${l}`)), "   */"].join("\n");
 }
 
