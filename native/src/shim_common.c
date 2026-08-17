@@ -84,16 +84,67 @@ brk_frame *brk_stash_pop(brk_handle *h) {
   return f;
 }
 
-uint8_t *brk_scratch_reserve(brk_handle *h, int32_t need) {
-  if (need <= h->scratch_cap) return h->scratch;
-  int32_t ncap = h->scratch_cap == 0 ? 65536 : h->scratch_cap;
+uint8_t *brk_buf_reserve(uint8_t **buf, int32_t *cap, int32_t need) {
+  if (need <= *cap) return *buf;
+  int32_t ncap = *cap == 0 ? 65536 : *cap;
   while (ncap < need) ncap *= 2;
-  uint8_t *ns = realloc(h->scratch, (size_t)ncap);
+  uint8_t *ns = realloc(*buf, (size_t)ncap);
   if (ns == NULL) return NULL;
-  h->scratch = ns;
-  h->scratch_cap = ncap;
+  *buf = ns;
+  *cap = ncap;
   return ns;
 }
+
+uint8_t *brk_scratch_reserve(brk_handle *h, int32_t need) {
+  return brk_buf_reserve(&h->scratch, &h->scratch_cap, need);
+}
+
+/* ---- threads ------------------------------------------------------------- */
+#if defined(_WIN32)
+typedef struct { void (*fn)(void *); void *arg; } brk_thread_boot;
+static DWORD WINAPI brk_thread_tramp(LPVOID p) {
+  brk_thread_boot b = *(brk_thread_boot *)p;
+  free(p);
+  b.fn(b.arg);
+  return 0;
+}
+int brk_thread_start(brk_thread_t *t, void (*fn)(void *), void *arg) {
+  brk_thread_boot *b = malloc(sizeof(*b));
+  if (b == NULL) return -1;
+  b->fn = fn;
+  b->arg = arg;
+  *t = CreateThread(NULL, 0, brk_thread_tramp, b, 0, NULL);
+  if (*t == NULL) {
+    free(b);
+    return -1;
+  }
+  return 0;
+}
+void brk_thread_join(brk_thread_t *t) {
+  WaitForSingleObject(*t, INFINITE);
+  CloseHandle(*t);
+}
+#else
+typedef struct { void (*fn)(void *); void *arg; } brk_thread_boot;
+static void *brk_thread_tramp(void *p) {
+  brk_thread_boot b = *(brk_thread_boot *)p;
+  free(p);
+  b.fn(b.arg);
+  return NULL;
+}
+int brk_thread_start(brk_thread_t *t, void (*fn)(void *), void *arg) {
+  brk_thread_boot *b = malloc(sizeof(*b));
+  if (b == NULL) return -1;
+  b->fn = fn;
+  b->arg = arg;
+  if (pthread_create(t, NULL, brk_thread_tramp, b) != 0) {
+    free(b);
+    return -1;
+  }
+  return 0;
+}
+void brk_thread_join(brk_thread_t *t) { pthread_join(*t, NULL); }
+#endif
 
 /* ========================================================================== */
 /* Version & mem                                                               */
@@ -254,6 +305,8 @@ BRK_EXPORT void brk_client_destroy(void *hv) {
   if (h == NULL) return;
 
   if (h->type == BRK_CLIENT_CONSUMER) {
+    /* The prefetch thread (if any) polls consumer_q — stop it before close. */
+    brk_consume_prefetch_teardown(h);
     /* Close via a dedicated queue: answer the rebalance (revoke) that arises
      * during close right here with assign(NULL)/incremental_unassign. */
     rd_kafka_queue_t *cq = rd_kafka_queue_new(h->rk);
@@ -304,6 +357,7 @@ BRK_EXPORT void brk_client_destroy(void *hv) {
   for (int32_t i = 0; i < h->topics.count; i++) free(h->topics.names[i]);
   free(h->topics.names);
   free(h->scratch);
+  free(h->cscratch);
   h->magic = 0;
   brk_mutex_destroy(&h->mu);
   free(h);

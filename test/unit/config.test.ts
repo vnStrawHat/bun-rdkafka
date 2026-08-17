@@ -92,6 +92,8 @@ describe("option js.*", () => {
       "js.consumer.max.batch.size": 64,
       "js.consumer.zero.copy": true,
       "js.poll.worker": true,
+      "js.consume.prefetch": true,
+      "js.consume.prefetch.frames": 8,
     });
     expect(js).toEqual({
       pollIdleMaxMs: 10,
@@ -102,6 +104,8 @@ describe("option js.*", () => {
       consumerMaxBatchSize: 64,
       consumerZeroCopy: true,
       pollWorker: true,
+      consumePrefetch: true,
+      consumePrefetchFrames: 8,
     });
     expect(properties).toEqual([["bootstrap.servers", "x:9092"]]);
   });

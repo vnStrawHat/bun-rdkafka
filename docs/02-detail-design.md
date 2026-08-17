@@ -340,6 +340,11 @@ COLD state:  no consumer running, producer outq_len == 0
   ArrayBuffer to the main thread. Eliminates idle polling entirely; the shim design already
   allows it (the handle is usable from another thread for consuming, guaranteed thread-safe
   by librdkafka).
+- **Experiment (2026-08-17): `js.consume.prefetch=true`** — the shim-side variant of the
+  same idea: a thread inside `libbunrdkafka` pre-serializes MESSAGE BATCH frames into a ring
+  (`brk_consume_prefetch_start`), and `brk_consume_batch` becomes a memcpy of one ready
+  frame. No Worker, no `postMessage`. Rationale, semantics and measured results:
+  [notes/consumer-prefetch-thread.md](./notes/consumer-prefetch-thread.md).
 
 ### 5.3 `BatchDecoder` / `EventDecoder`
 

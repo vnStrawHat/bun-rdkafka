@@ -141,6 +141,42 @@ describe.skipIf(!AVAILABLE)("M3 KafkaConsumer — real broker", () => {
   );
 
   test(
+    "flowing + js.consume.prefetch (experiment): same roundtrip through the shim prefetch thread, rebalance events still surface, clean disconnect",
+    async () => {
+      const topic = `m3-flow-pf-${RUN_ID}`;
+      await createTopic(topic, 1);
+      await produce(topic, 2000, { withMeta: true });
+
+      const consumer = new KafkaConsumer(
+        consumerConfig(`m3-g-flow-pf-${RUN_ID}`, {
+          "js.consume.prefetch": true,
+          "js.consume.prefetch.frames": 2,
+        }),
+      );
+      await connectConsumer(consumer);
+      const got: Message[] = [];
+      let assigned = 0;
+      consumer.on("rebalance", (err) => {
+        if (err.code === -175 /* ERR__ASSIGN_PARTITIONS */) assigned++;
+      });
+      consumer.on("data", (m: Message) => got.push(m));
+      consumer.subscribe([topic]);
+      consumer.consume();
+      await waitFor(() => got.length >= 2000, 60_000, () => `only ${got.length}/2000 received`);
+      expect(assigned).toBe(1);
+
+      for (let i = 0; i < 2000; i++) {
+        const m = got[i] as Message;
+        expect(m.offset).toBe(i);
+        expect((m.value as Buffer).toString()).toBe(`m3-value-${i}`);
+        expect((m.key as Buffer).toString()).toBe(`m3-key-${i}`);
+      }
+      await new Promise<void>((resolve) => consumer.disconnect(() => resolve()));
+    },
+    120_000,
+  );
+
+  test(
     "non-flowing consume(n): 3 × consume(10) collects all 30, in order",
     async () => {
       const topic = `m3-num-${RUN_ID}`;

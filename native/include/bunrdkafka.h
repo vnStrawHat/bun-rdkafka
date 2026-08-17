@@ -346,6 +346,19 @@ BRK_EXPORT int32_t brk_subscription(void *h, uint8_t *buf, int32_t cap);
 BRK_EXPORT int32_t brk_consume_batch(void *h, uint8_t *buf, int32_t buf_cap,
                                      int32_t max_msgs, int32_t timeout_ms);
 
+/* EXPERIMENT (docs/notes/consumer-prefetch-thread.md): starts a shim-owned
+ * thread that pre-serializes MESSAGE BATCH frames off the JS thread into a
+ * ring of `nframes` frames of `frame_cap` bytes / `max_msgs` messages each.
+ * While active, brk_consume_batch copies one ready frame into `buf` (its
+ * max_msgs/timeout_ms are ignored; BUFFER_TOO_SMALL + brk_last_required_size
+ * apply). Must be called before subscribe/assign; stop is implicit in
+ * brk_client_destroy. Returns BRK_OK or a negative error. */
+BRK_EXPORT int32_t brk_consume_prefetch_start(void *h, int32_t frame_cap,
+                                              int32_t max_msgs, int32_t nframes);
+BRK_EXPORT int32_t brk_consume_prefetch_stop(void *h);
+/* Frames filled by the prefetch thread so far; -1 when not active. */
+BRK_EXPORT int64_t brk_consume_prefetch_stats(void *h);
+
 /* tpl_buf NULL / len 0 = commit all current positions.
  * async != 0: returns immediately, result arrives via the OFFSET_COMMIT event.
  * async == 0: blocks until the commit completes (use from a Worker or accept

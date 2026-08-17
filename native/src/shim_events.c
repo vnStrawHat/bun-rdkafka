@@ -16,6 +16,11 @@ static int32_t tpl_encode_bound(const rd_kafka_topic_partition_list_t *tpl) {
 /* Serializes 1 event into scratch. Returns total frame bytes; 0 = skip;
  * negative = error. */
 int32_t brk_serialize_event(brk_handle *h, rd_kafka_event_t *ev) {
+  return brk_serialize_event_into(h, ev, &h->scratch, &h->scratch_cap);
+}
+
+int32_t brk_serialize_event_into(brk_handle *h, rd_kafka_event_t *ev,
+                                 uint8_t **sbuf, int32_t *scap) {
   rd_kafka_event_type_t t = rd_kafka_event_type(ev);
   uint8_t type;
   int32_t bound; /* upper bound payload */
@@ -28,7 +33,7 @@ int32_t brk_serialize_event(brk_handle *h, rd_kafka_event_t *ev) {
     int32_t jlen = brk_admin_result_json(h, ev, &json);
     if (jlen < 0) return jlen;
     int32_t payload = 8 + 4 + 4 + jlen;
-    uint8_t *s = brk_scratch_reserve(h, 5 + payload);
+    uint8_t *s = brk_buf_reserve(sbuf, scap, 5 + payload);
     if (s == NULL) {
       free(json);
       return BRK_ERR_NOMEM;
@@ -88,7 +93,7 @@ int32_t brk_serialize_event(brk_handle *h, rd_kafka_event_t *ev) {
       return 0; /* non-forwarded type (e.g. a stray FETCH) — skip */
   }
 
-  uint8_t *s = brk_scratch_reserve(h, 5 + bound);
+  uint8_t *s = brk_buf_reserve(sbuf, scap, 5 + bound);
   if (s == NULL) return BRK_ERR_NOMEM;
   brk_wbuf w = {s, 5 + bound, 0};
   wb_u8(&w, type);

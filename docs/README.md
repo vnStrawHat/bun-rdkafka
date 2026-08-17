@@ -8,6 +8,7 @@ via `bun:ffi`, with an API compatible with [confluent-kafka-javascript](https://
 | [01-spec.md](./01-spec.md) | Requirements specification: goals, scope, functional/non-functional requirements, supported platforms, v1.0 acceptance criteria, risks |
 | [02-detail-design.md](./02-detail-design.md) | Detailed design: 4-layer architecture, C shim ABI, packed binary protocol, PollScheduler, the two API layers, memory management, prebuilt packaging, CI/CD, testing & benchmarking, ADRs |
 | [03-implementation-plan.md](./03-implementation-plan.md) | Implementation plan: 8 milestones (M0–M8), dependencies, ~14–18 week estimate, schedule risks |
+| [notes/](./notes/) | Technical notes on experiments and design explorations (e.g. [consumer prefetch thread](./notes/consumer-prefetch-thread.md)) |
 
 **Architecture in one paragraph:** a C shim (`libbunrdkafka`) statically links librdkafka
 together with all of its dependencies into exactly one shared library, flattens the API into

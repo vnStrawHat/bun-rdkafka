@@ -29,6 +29,13 @@ typedef CRITICAL_SECTION brk_mutex_t;
 #define brk_mutex_destroy(m) DeleteCriticalSection(m)
 #define brk_mutex_lock(m) EnterCriticalSection(m)
 #define brk_mutex_unlock(m) LeaveCriticalSection(m)
+typedef CONDITION_VARIABLE brk_cond_t;
+#define brk_cond_init(c) InitializeConditionVariable(c)
+#define brk_cond_destroy(c) ((void)0)
+#define brk_cond_wait(c, m) SleepConditionVariableCS((c), (m), INFINITE)
+#define brk_cond_signal(c) WakeConditionVariable(c)
+#define brk_cond_broadcast(c) WakeAllConditionVariable(c)
+typedef HANDLE brk_thread_t;
 #else
 #include <pthread.h>
 typedef pthread_mutex_t brk_mutex_t;
@@ -36,7 +43,17 @@ typedef pthread_mutex_t brk_mutex_t;
 #define brk_mutex_destroy(m) pthread_mutex_destroy(m)
 #define brk_mutex_lock(m) pthread_mutex_lock(m)
 #define brk_mutex_unlock(m) pthread_mutex_unlock(m)
+typedef pthread_cond_t brk_cond_t;
+#define brk_cond_init(c) pthread_cond_init((c), NULL)
+#define brk_cond_destroy(c) pthread_cond_destroy(c)
+#define brk_cond_wait(c, m) pthread_cond_wait((c), (m))
+#define brk_cond_signal(c) pthread_cond_signal(c)
+#define brk_cond_broadcast(c) pthread_cond_broadcast(c)
+typedef pthread_t brk_thread_t;
 #endif
+/* Starts a thread running fn(arg); returns 0 on success. Defined in shim_common.c */
+int brk_thread_start(brk_thread_t *t, void (*fn)(void *), void *arg);
+void brk_thread_join(brk_thread_t *t);
 
 #define BRK_HANDLE_MAGIC 0xB0BAF00Du
 
@@ -65,6 +82,29 @@ typedef struct {
   int32_t cap;
 } brk_topic_tab;
 
+/* One pre-serialized MESSAGE BATCH (format 4) produced by the prefetch thread. */
+typedef struct {
+  uint8_t *buf;
+  int32_t cap;
+  int32_t len;   /* bytes used */
+  int32_t count; /* messages in the frame */
+} brk_pf_frame;
+
+/* Consumer prefetch thread state (opt-in via brk_consume_prefetch_start).
+ * SPSC ring: the thread fills frames[tail], JS takes frames[head]. */
+typedef struct {
+  bool enabled;
+  bool running;      /* cleared by stop; read under mu */
+  brk_thread_t thread;
+  brk_mutex_t mu;
+  brk_cond_t cv;     /* signaled when a frame becomes ready or free */
+  brk_pf_frame *frames;
+  int32_t nframes;
+  int32_t max_msgs;
+  int32_t head, tail, ready;
+  int64_t frames_filled; /* stats */
+} brk_prefetch;
+
 typedef struct brk_handle {
   uint32_t magic;
   int32_t type; /* BRK_CLIENT_* */
@@ -84,6 +124,11 @@ typedef struct brk_handle {
    * the out-buf */
   uint8_t *scratch;
   int32_t scratch_cap;
+  /* consume-path scratch: separate from `scratch` so the prefetch thread
+   * (consume path) never races the JS thread (events path). */
+  uint8_t *cscratch;
+  int32_t cscratch_cap;
+  brk_prefetch pf;
 } brk_handle;
 
 /* ---- shared helpers (defined in shim_common.c) ---------------------------- */
@@ -93,11 +138,18 @@ int32_t brk_intern_topic(brk_handle *h, const char *name); /* takes mu        */
 void brk_stash_push(brk_handle *h, const uint8_t *frame, int32_t len); /* takes mu */
 brk_frame *brk_stash_pop(brk_handle *h);     /* takes mu; caller free()s      */
 uint8_t *brk_scratch_reserve(brk_handle *h, int32_t need); /* grows scratch   */
+uint8_t *brk_buf_reserve(uint8_t **buf, int32_t *cap, int32_t need); /* generic grow */
+/* Stops + frees the prefetch thread/ring if started (idempotent). */
+void brk_consume_prefetch_teardown(brk_handle *h);
 
 /* Serializes ONE event into an EVENT FRAME (format 5) in the handle's scratch.
  * Returns the frame's byte count, 0 = event type is not forwarded (skip),
  * negative = error. Defined in shim_events.c. */
 int32_t brk_serialize_event(brk_handle *h, rd_kafka_event_t *ev);
+/* Same, but serializes into an arbitrary growable buffer (used by the
+ * consume path, which may run on the prefetch thread). */
+int32_t brk_serialize_event_into(brk_handle *h, rd_kafka_event_t *ev,
+                                 uint8_t **buf, int32_t *cap);
 
 /* ---- admin (shim_admin.c) ------------------------------------------------- */
 /* Whether the event type is one of the Admin API's *_RESULT types. */

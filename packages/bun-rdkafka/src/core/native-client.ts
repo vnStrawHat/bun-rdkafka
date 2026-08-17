@@ -153,6 +153,8 @@ export interface WatermarkOffsets {
   high: number;
 }
 
+/** Messages per prefetch frame (matches the callback layer's CONSUME_BATCH_MAX). */
+const CONSUME_PREFETCH_MAX_MSGS = 500;
 const ERRSTR_CAP = 512;
 
 /* ========================================================================== */
@@ -331,6 +333,27 @@ export class NativeClient {
     };
     leakRegistry.register(this, this.box, this);
     this.stateValue = "CONNECTING";
+
+    // EXPERIMENT (docs/notes/consumer-prefetch-thread.md): consume batches are
+    // serialized on a shim thread; frames are sized like the JS consume buffer
+    // so brk_consume_batch (now a memcpy) never reports BUFFER_TOO_SMALL.
+    if (this.type === BRK_CLIENT_CONSUMER && this.js.consumePrefetch) {
+      this.check(
+        native.brk_consume_prefetch_start(
+          handle,
+          this.js.consumeBufferBytes,
+          CONSUME_PREFETCH_MAX_MSGS,
+          this.js.consumePrefetchFrames,
+        ),
+        "brk_consume_prefetch_start",
+      );
+    }
+  }
+
+  /** Frames filled by the prefetch thread so far (-1 when the experiment is off). */
+  prefetchStats(): number {
+    if (this.box === undefined || this.box.destroyed) return -1;
+    return Number(this.native.brk_consume_prefetch_stats(this.handle));
   }
 
   /** CONNECTING → READY (when the first metadata arrives). */

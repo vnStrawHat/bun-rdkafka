@@ -44,6 +44,13 @@ export interface JsOptions {
   consumerZeroCopy: boolean;
   /** `js.poll.worker` — blocking poll on a Worker (later phase, design §5.2). */
   pollWorker: boolean;
+  /**
+   * `js.consume.prefetch` — EXPERIMENT: serialize consume batches on a
+   * shim-owned thread (docs/notes/consumer-prefetch-thread.md).
+   */
+  consumePrefetch: boolean;
+  /** `js.consume.prefetch.frames` — ring depth for the prefetch thread. */
+  consumePrefetchFrames: number;
 }
 
 type JsOptionType = "number" | "boolean";
@@ -82,6 +89,8 @@ export const JS_OPTION_SPECS: Readonly<Record<string, JsOptionSpec>> = Object.fr
   },
   "js.consumer.zero.copy": { field: "consumerZeroCopy", type: "boolean", fallback: false },
   "js.poll.worker": { field: "pollWorker", type: "boolean", fallback: false },
+  "js.consume.prefetch": { field: "consumePrefetch", type: "boolean", fallback: false },
+  "js.consume.prefetch.frames": { field: "consumePrefetchFrames", type: "number", fallback: 4 },
 });
 
 export const DEFAULT_JS_OPTIONS: Readonly<JsOptions> = Object.freeze({
@@ -93,6 +102,8 @@ export const DEFAULT_JS_OPTIONS: Readonly<JsOptions> = Object.freeze({
   consumerMaxBatchSize: 32,
   consumerZeroCopy: false,
   pollWorker: false,
+  consumePrefetch: false,
+  consumePrefetchFrames: 4,
 });
 
 /* ========================================================================== */
@@ -275,6 +286,7 @@ function assignJsOption(js: JsOptions, field: keyof JsOptions, value: number | b
   switch (field) {
     case "consumerZeroCopy":
     case "pollWorker":
+    case "consumePrefetch":
       js[field] = value as boolean;
       return;
     default:

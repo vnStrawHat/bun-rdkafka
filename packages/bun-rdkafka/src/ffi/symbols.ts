@@ -95,6 +95,12 @@ export const brkSymbols = {
   brk_subscription: { args: ["ptr", "ptr", "i32"], returns: "i32" },
   /** `int32_t brk_consume_batch(void *h, uint8_t *buf, int32_t buf_cap, int32_t max_msgs, int32_t timeout_ms)` */
   brk_consume_batch: { args: ["ptr", "ptr", "i32", "i32", "i32"], returns: "i32" },
+  /** `int32_t brk_consume_prefetch_start(void *h, int32_t frame_cap, int32_t max_msgs, int32_t nframes)` (experiment) */
+  brk_consume_prefetch_start: { args: ["ptr", "i32", "i32", "i32"], returns: "i32" },
+  /** `int32_t brk_consume_prefetch_stop(void *h)` */
+  brk_consume_prefetch_stop: { args: ["ptr"], returns: "i32" },
+  /** `int64_t brk_consume_prefetch_stats(void *h)` — frames filled, -1 when inactive */
+  brk_consume_prefetch_stats: { args: ["ptr"], returns: "i64" },
   /** `int32_t brk_commit(void *h, const uint8_t *tpl_buf, int32_t len, int32_t async)` */
   brk_commit: { args: ["ptr", "ptr", "i32", "i32"], returns: "i32" },
   /**

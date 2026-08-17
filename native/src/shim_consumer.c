@@ -199,7 +199,7 @@ static int32_t serialize_msg(brk_handle *h, const rd_kafka_message_t *m) {
     bound += 2 + (int32_t)strlen(hname) + 4 + (int32_t)hsize;
   }
 
-  uint8_t *s = brk_scratch_reserve(h, bound);
+  uint8_t *s = brk_buf_reserve(&h->cscratch, &h->cscratch_cap, bound);
   if (s == NULL) return BRK_ERR_NOMEM;
   brk_wbuf w = {s, bound, 0};
 
@@ -245,7 +245,7 @@ static int32_t serialize_eof(brk_handle *h,
   int32_t tid = brk_intern_topic(h, tp->topic);
   if (tid < 0) return tid;
   int32_t bound = 4 + 4 + 8 + 8 + 1 + 2 + 4 + 4 + 2 + 4;
-  uint8_t *s = brk_scratch_reserve(h, bound);
+  uint8_t *s = brk_buf_reserve(&h->cscratch, &h->cscratch_cap, bound);
   if (s == NULL) return BRK_ERR_NOMEM;
   brk_wbuf w = {s, bound, 0};
   wb_i32(&w, tid);
@@ -268,12 +268,12 @@ static int32_t serialize_eof(brk_handle *h,
 static int32_t emit_or_pend(brk_handle *h, brk_wbuf *w, int32_t n,
                             int32_t msgs) {
   if (n <= w->cap - w->off) {
-    wb_raw(w, h->scratch, n);
+    wb_raw(w, h->cscratch, n);
     return 1;
   }
   h->pending_msg = malloc((size_t)n);
   if (h->pending_msg != NULL) {
-    memcpy(h->pending_msg, h->scratch, (size_t)n);
+    memcpy(h->pending_msg, h->cscratch, (size_t)n);
     h->pending_msg_len = n;
   }
   if (msgs == 0) {
@@ -285,14 +285,14 @@ static int32_t emit_or_pend(brk_handle *h, brk_wbuf *w, int32_t n,
   return 0;
 }
 
-BRK_EXPORT int32_t brk_consume_batch(void *hv, uint8_t *buf, int32_t buf_cap,
-                                     int32_t max_msgs, int32_t timeout_ms) {
-  brk_handle *h = brk_check(hv);
-  if (h == NULL) return BRK_ERR_INVALID_HANDLE;
-  if (h->type != BRK_CLIENT_CONSUMER) return BRK_ERR_INVALID_STATE;
-  if (buf == NULL || buf_cap <= 0 || max_msgs <= 0) return BRK_ERR_BAD_ARGS;
-
+/* Fills `buf` with up to max_msgs serialized messages from consumer_q. Runs on
+ * the JS thread (default) or on the prefetch thread (never both). Returns the
+ * message count or a negative error. */
+static int32_t consume_fill(brk_handle *h, uint8_t *buf, int32_t buf_cap,
+                            int32_t max_msgs, int32_t timeout_ms,
+                            int32_t *out_len) {
   brk_wbuf w = {buf, buf_cap, 0};
+  *out_len = 0;
   int32_t msgs = 0;
 
   /* 0) Message held over from the previous call (out-buf was full then). */
@@ -328,7 +328,9 @@ BRK_EXPORT int32_t brk_consume_batch(void *hv, uint8_t *buf, int32_t buf_cap,
         rd_kafka_topic_partition_destroy(tp);
         if (n < 0) {
           brk_set_err(h, n, "serialize eof failed");
-          return msgs > 0 ? msgs : n;
+          *out_len = w.off;
+          *out_len = w.off;
+      return msgs > 0 ? msgs : n;
         }
         int32_t e = emit_or_pend(h, &w, n, msgs);
         if (e < 0) return e;
@@ -339,9 +341,9 @@ BRK_EXPORT int32_t brk_consume_batch(void *hv, uint8_t *buf, int32_t buf_cap,
         /* REBALANCE / OFFSET_COMMIT / etc. on the consumer queue → stash for
          * brk_events_poll (JS always calls events_poll in the same cadence as
          * consume). */
-        int32_t n = brk_serialize_event(h, ev);
+        int32_t n = brk_serialize_event_into(h, ev, &h->cscratch, &h->cscratch_cap);
         rd_kafka_event_destroy(ev);
-        if (n > 0) brk_stash_push(h, h->scratch, n);
+        if (n > 0) brk_stash_push(h, h->cscratch, n);
         continue;
       }
     }
@@ -355,6 +357,7 @@ BRK_EXPORT int32_t brk_consume_batch(void *hv, uint8_t *buf, int32_t buf_cap,
     int32_t n = serialize_msg(h, m);
     if (n < 0) {
       brk_set_err(h, n, "serialize message failed");
+      *out_len = w.off;
       return msgs > 0 ? msgs : n;
     }
     int32_t e = emit_or_pend(h, &w, n, msgs);
@@ -362,7 +365,172 @@ BRK_EXPORT int32_t brk_consume_batch(void *hv, uint8_t *buf, int32_t buf_cap,
     if (e == 0) break;
     msgs++;
   }
+  *out_len = w.off;
   return msgs;
+}
+
+/* ========================================================================== */
+/* Prefetch thread (opt-in): fills a ring of frames off the JS thread          */
+/* ========================================================================== */
+
+static void prefetch_main(void *arg) {
+  brk_handle *h = arg;
+  brk_prefetch *pf = &h->pf;
+  for (;;) {
+    brk_mutex_lock(&pf->mu);
+    while (pf->running && pf->ready == pf->nframes) brk_cond_wait(&pf->cv, &pf->mu);
+    if (!pf->running) {
+      brk_mutex_unlock(&pf->mu);
+      return;
+    }
+    brk_pf_frame *f = &pf->frames[pf->tail];
+    brk_mutex_unlock(&pf->mu);
+
+    /* Fill outside the lock: JS never touches frames[tail] while ready < nframes. */
+    int32_t flen = 0;
+    int32_t n = consume_fill(h, f->buf, f->cap, pf->max_msgs, 100, &flen);
+    if (n <= 0) {
+      /* 0 = nothing within 100 ms; negative = error (recorded via brk_set_err
+       * inside consume_fill; BUFFER_TOO_SMALL cannot happen for a fresh frame
+       * unless one message exceeds the frame — surfaced to JS below). */
+      if (n == BRK_ERR_BUFFER_TOO_SMALL) {
+        /* Grow this frame to fit the pending message and retry next round. */
+        brk_mutex_lock(&h->mu);
+        int32_t need = h->last_required;
+        brk_mutex_unlock(&h->mu);
+        if (need > f->cap) {
+          uint8_t *nb = realloc(f->buf, (size_t)need);
+          if (nb != NULL) {
+            f->buf = nb;
+            f->cap = need;
+          }
+        }
+      }
+      continue;
+    }
+    f->count = n;
+    f->len = flen;
+    brk_mutex_lock(&pf->mu);
+    pf->tail = (pf->tail + 1) % pf->nframes;
+    pf->ready++;
+    pf->frames_filled++;
+    brk_cond_broadcast(&pf->cv);
+    brk_mutex_unlock(&pf->mu);
+  }
+}
+
+BRK_EXPORT int32_t brk_consume_prefetch_start(void *hv, int32_t frame_cap,
+                                              int32_t max_msgs,
+                                              int32_t nframes) {
+  brk_handle *h = brk_check(hv);
+  if (h == NULL) return BRK_ERR_INVALID_HANDLE;
+  if (h->type != BRK_CLIENT_CONSUMER) return BRK_ERR_INVALID_STATE;
+  if (frame_cap < 4096 || max_msgs <= 0 || nframes < 1 || nframes > 64)
+    return BRK_ERR_BAD_ARGS;
+  if (h->pf.enabled) return BRK_ERR_INVALID_STATE;
+
+  brk_prefetch *pf = &h->pf;
+  pf->frames = calloc((size_t)nframes, sizeof(brk_pf_frame));
+  if (pf->frames == NULL) return BRK_ERR_NOMEM;
+  for (int32_t i = 0; i < nframes; i++) {
+    pf->frames[i].buf = malloc((size_t)frame_cap);
+    if (pf->frames[i].buf == NULL) {
+      for (int32_t j = 0; j < i; j++) free(pf->frames[j].buf);
+      free(pf->frames);
+      pf->frames = NULL;
+      return BRK_ERR_NOMEM;
+    }
+    pf->frames[i].cap = frame_cap;
+  }
+  pf->nframes = nframes;
+  pf->max_msgs = max_msgs;
+  pf->head = pf->tail = pf->ready = 0;
+  pf->frames_filled = 0;
+  brk_mutex_init(&pf->mu);
+  brk_cond_init(&pf->cv);
+  pf->running = true;
+  pf->enabled = true;
+  if (brk_thread_start(&pf->thread, prefetch_main, h) != 0) {
+    pf->running = false;
+    pf->enabled = false;
+    brk_cond_destroy(&pf->cv);
+    brk_mutex_destroy(&pf->mu);
+    for (int32_t i = 0; i < nframes; i++) free(pf->frames[i].buf);
+    free(pf->frames);
+    pf->frames = NULL;
+    return BRK_ERR_NOMEM;
+  }
+  return BRK_OK;
+}
+
+void brk_consume_prefetch_teardown(brk_handle *h) {
+  brk_prefetch *pf = &h->pf;
+  if (!pf->enabled) return;
+  brk_mutex_lock(&pf->mu);
+  pf->running = false;
+  brk_cond_broadcast(&pf->cv);
+  brk_mutex_unlock(&pf->mu);
+  /* Wake the thread out of rd_kafka_queue_poll(consumer_q, 100). */
+  if (h->consumer_q != NULL) rd_kafka_queue_yield(h->consumer_q);
+  brk_thread_join(&pf->thread);
+  for (int32_t i = 0; i < pf->nframes; i++) free(pf->frames[i].buf);
+  free(pf->frames);
+  pf->frames = NULL;
+  brk_cond_destroy(&pf->cv);
+  brk_mutex_destroy(&pf->mu);
+  pf->enabled = false;
+}
+
+BRK_EXPORT int32_t brk_consume_prefetch_stop(void *hv) {
+  brk_handle *h = brk_check(hv);
+  if (h == NULL) return BRK_ERR_INVALID_HANDLE;
+  brk_consume_prefetch_teardown(h);
+  return BRK_OK;
+}
+
+BRK_EXPORT int64_t brk_consume_prefetch_stats(void *hv) {
+  brk_handle *h = brk_check(hv);
+  if (h == NULL || !h->pf.enabled) return -1;
+  brk_mutex_lock(&h->pf.mu);
+  int64_t v = h->pf.frames_filled;
+  brk_mutex_unlock(&h->pf.mu);
+  return v;
+}
+
+/* Copies one ready frame into the JS buffer. 0 = none ready. */
+static int32_t prefetch_take(brk_handle *h, uint8_t *buf, int32_t buf_cap) {
+  brk_prefetch *pf = &h->pf;
+  brk_mutex_lock(&pf->mu);
+  if (pf->ready == 0) {
+    brk_mutex_unlock(&pf->mu);
+    return 0;
+  }
+  brk_pf_frame *f = &pf->frames[pf->head];
+  if (f->len > buf_cap) {
+    brk_mutex_unlock(&pf->mu);
+    brk_mutex_lock(&h->mu);
+    h->last_required = f->len;
+    brk_mutex_unlock(&h->mu);
+    return BRK_ERR_BUFFER_TOO_SMALL;
+  }
+  memcpy(buf, f->buf, (size_t)f->len);
+  int32_t count = f->count;
+  pf->head = (pf->head + 1) % pf->nframes;
+  pf->ready--;
+  brk_cond_broadcast(&pf->cv);
+  brk_mutex_unlock(&pf->mu);
+  return count;
+}
+
+BRK_EXPORT int32_t brk_consume_batch(void *hv, uint8_t *buf, int32_t buf_cap,
+                                     int32_t max_msgs, int32_t timeout_ms) {
+  brk_handle *h = brk_check(hv);
+  if (h == NULL) return BRK_ERR_INVALID_HANDLE;
+  if (h->type != BRK_CLIENT_CONSUMER) return BRK_ERR_INVALID_STATE;
+  if (buf == NULL || buf_cap <= 0 || max_msgs <= 0) return BRK_ERR_BAD_ARGS;
+  if (h->pf.enabled) return prefetch_take(h, buf, buf_cap);
+  int32_t len = 0;
+  return consume_fill(h, buf, buf_cap, max_msgs, timeout_ms, &len);
 }
 
 /* ========================================================================== */
