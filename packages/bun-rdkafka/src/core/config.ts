@@ -15,8 +15,81 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AnyCallback = (...args: any[]) => unknown;
 
-/** Input config: librdkafka properties + `js.*` + callbacks, one flat level. */
+/**
+ * Input config as consumed by the {@link ConfigBuilder}: librdkafka
+ * properties + `js.*` + callbacks, one flat level. The public constructors
+ * take the typed variants ({@link ProducerConfig}, {@link KafkaConsumerConfig},
+ * …), which are assignable to this.
+ */
 export type ClientConfig = Record<string, unknown>;
+
+/**
+ * The `js.*` options (TypeScript-layer tuning; never forwarded to librdkafka).
+ * Full explanations and recommended values: README, "Configuration: `js.*` options".
+ */
+export type JsConfig = {
+  /**
+   * Ceiling of the adaptive poll backoff when the client is idle (1 → 2 → 4 … ms).
+   * Also the worst-case added latency for a message arriving on an idle consumer and
+   * for rebalance / offset-commit / delivery-report delivery.
+   *
+   * @default 50
+   */
+  "js.poll.idle.max.ms"?: number;
+  /**
+   * Poll interval while the client is *cold* (no subscription/assignment, nothing in
+   * flight): only log/stats/error events are picked up. The timer is `unref`'d.
+   *
+   * @default 500
+   */
+  "js.poll.interval.ms"?: number;
+  /**
+   * Size (bytes) of the reusable buffer one `brk_consume_batch` FFI call fills. Grows
+   * automatically if a single message does not fit — a performance knob, not a limit.
+   *
+   * @default 4194304
+   */
+  "js.consume.buffer.bytes"?: number;
+  /**
+   * Size (bytes) of the reusable buffer for the event drain (delivery reports,
+   * rebalance/commit events, stats JSON). Grows automatically.
+   *
+   * @default 262144
+   */
+  "js.event.buffer.bytes"?: number;
+  /**
+   * Producer backpressure threshold: messages still waiting for a delivery report.
+   * Beyond it `produce()` throws `ERR__QUEUE_FULL` synchronously.
+   *
+   * @default the value of `queue.buffering.max.messages` (librdkafka default 100000)
+   */
+  "js.producer.max.pending"?: number;
+  /**
+   * KafkaJS API only: maximum messages handed to one `eachBatch` call.
+   *
+   * @default 32
+   */
+  "js.consumer.max.batch.size"?: number;
+  /**
+   * EXPERIMENTAL — serialize consume batches on a shim-owned thread so the JS thread
+   * only decodes/emits (+26–33 % consumer throughput at +33–40 % CPU on ≥ 2 cores).
+   * Prefetched frames are still delivered after seek/pause/revoke; see
+   * docs/notes/consumer-prefetch-thread.md.
+   *
+   * @default false
+   */
+  "js.consume.prefetch"?: boolean;
+  /**
+   * Ring depth of the prefetch thread (frames of `js.consume.buffer.bytes`).
+   *
+   * @default 4
+   */
+  "js.consume.prefetch.frames"?: number;
+  /** Reserved (zero-copy message views) — not yet effective. */
+  "js.consumer.zero.copy"?: boolean;
+  /** Reserved (Worker-based blocking poll) — not yet effective. */
+  "js.poll.worker"?: boolean;
+};
 
 export class ConfigError extends Error {
   override readonly name = "ConfigError";

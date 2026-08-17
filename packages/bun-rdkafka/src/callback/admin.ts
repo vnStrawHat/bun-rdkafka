@@ -52,6 +52,7 @@ import {
   Client,
   type ClientEventMap,
   type ClientEvents,
+  type ClientGlobalConfig,
   type ClientInternalOptions,
 } from "./client.ts";
 
@@ -253,6 +254,9 @@ function splitOptions<T>(
 /* AdminClient                                                                 */
 /* ========================================================================== */
 
+/** `AdminClient.create(conf)` — librdkafka's global properties + `js.*` + the common callbacks. */
+export type AdminClientConfig = ClientGlobalConfig;
+
 /** Events of {@link AdminClient} — the client events only. */
 export type AdminClientEventMap = ClientEventMap;
 
@@ -279,7 +283,7 @@ export class AdminClient extends Client<AdminClientEventMap> {
    * before connecting.
    */
   static create(
-    conf: ClientConfig,
+    conf: AdminClientConfig,
     eventHandlers?: AdminEventHandlers,
     internal?: ClientInternalOptions,
   ): AdminClient {

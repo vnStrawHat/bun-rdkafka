@@ -563,8 +563,8 @@ export class Producer {
       throw invalidArg("password must be set for setSaslCredentials");
     }
     if (this.#state < ProducerState.CONNECTING) {
-      this.#userConfig["sasl.username"] = args.username;
-      this.#userConfig["sasl.password"] = args.password;
+      this.#userConfig["sasl.username"] = args.username as string;
+      this.#userConfig["sasl.password"] = args.password as string;
       const block = this.#userConfig.kafkaJS;
       if (block !== undefined && block.sasl !== undefined) {
         // hasOwn was checked above — TS cannot narrow through Object.hasOwn.

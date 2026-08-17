@@ -9,7 +9,8 @@
     "test": "bun test test/unit test/conformance",
     "test:integration": "bun test test/integration",
     "typecheck": "tsc --noEmit",
-    "docs:api": "typedoc"
+    "docs:api": "typedoc",
+    "gen:config": "bun scripts/gen-librdkafka-config.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",

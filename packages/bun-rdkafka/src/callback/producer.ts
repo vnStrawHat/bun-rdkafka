@@ -40,12 +40,14 @@ import { ERROR_CODES, LibrdKafkaError, errorDescription } from "../core/errors.t
 import type { NativeClient } from "../core/native-client.ts";
 import {
   type ClientEventMap,
+  type ClientGlobalConfig,
   Client,
   type ClientInternalOptions,
   type DisconnectCallback,
   type Metadata,
 } from "./client.ts";
 import { ProducerStream, type WriteStreamOptions } from "./producer-stream.ts";
+import type { ProducerGlobalConfig, ProducerTopicConfig } from "../core/librdkafka-config.ts";
 
 /* ========================================================================== */
 /* Public types                                                                */
@@ -195,6 +197,23 @@ export function normalizeHeaders(headers: ProduceHeaders | undefined): ProduceHe
 /* Producer                                                                    */
 /* ========================================================================== */
 
+/**
+ * `new Producer(conf, topicConf?)` — librdkafka's producer properties
+ * ({@link ProducerGlobalConfig}; topic-level ones such as `acks` may also be
+ * given here, librdkafka applies them to the default topic conf), the `js.*`
+ * options, and the callbacks below.
+ */
+export type ProducerConfig = ProducerGlobalConfig &
+  ProducerTopicConfig &
+  ClientGlobalConfig & {
+    /** `true` enables the `delivery-report` event; a function is registered as its listener. */
+    dr_cb?: boolean | DeliveryReportListener;
+    /** Like `dr_cb`, and the report additionally carries the message `value`. */
+    dr_msg_cb?: boolean | DeliveryReportListener;
+    /** JS-side partitioner used when `produce()` gets partition `-1`/`null` — see {@link PartitionerCallback}. */
+    partitioner_cb?: PartitionerCallback;
+  };
+
 /** Events of {@link Producer}: the client events plus `delivery-report`. */
 export interface ProducerEventMap extends ClientEventMap {
   /** One per produced message once the broker acked (or failed) it — needs `dr_cb`/`dr_msg_cb`. */
@@ -210,8 +229,8 @@ export class Producer extends Client<ProducerEventMap> {
    * (upstream `Producer.createWriteStream`). See `callback/producer-stream.ts`.
    */
   static createWriteStream(
-    conf: ClientConfig,
-    topicConf: ClientConfig | undefined,
+    conf: ProducerConfig,
+    topicConf: ProducerTopicConfig | undefined,
     streamOptions: WriteStreamOptions | string,
   ): ProducerStream {
     return new ProducerStream(new Producer(conf, topicConf), streamOptions);
@@ -234,8 +253,8 @@ export class Producer extends Client<ProducerEventMap> {
   private readonly partitionCountInFlight = new Set<string>();
 
   constructor(
-    globalConf?: ClientConfig,
-    topicConf?: ClientConfig,
+    globalConf?: ProducerConfig,
+    topicConf?: ProducerTopicConfig,
     internal: ClientInternalOptions = {},
   ) {
     super(globalConf, topicConf, BRK_CLIENT_PRODUCER, internal);

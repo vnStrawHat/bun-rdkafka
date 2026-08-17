@@ -21,6 +21,7 @@ import {
 import { SliceProducer, waitFor } from "./slice-harness.ts";
 import {
   KafkaConsumer,
+  type KafkaConsumerConfig,
   type Message,
 } from "../../packages/bun-rdkafka/src/callback/kafka-consumer.ts";
 
@@ -29,7 +30,7 @@ const RUN_ID = Date.now().toString(36);
 
 let brokers = "localhost:9092";
 
-function consumerConfig(groupId: string, extra: Record<string, unknown> = {}) {
+function consumerConfig(groupId: string, extra: KafkaConsumerConfig = {}): KafkaConsumerConfig {
   return {
     "bootstrap.servers": brokers,
     "group.id": groupId,

@@ -30,7 +30,7 @@ bun run build:native      # cmake -S native -B native/build && build → native/
 
 Notes:
 
-- librdkafka is pinned by the `librdkafka.version` file (single source of truth) and fetched/built statically via CMake FetchContent. Version bumps must be their own PR and run the full integration suite.
+- librdkafka is pinned by the `librdkafka.version` file (single source of truth) and fetched/built statically via CMake FetchContent. Version bumps must be their own PR, run the full integration suite, **and regenerate the typed config properties**: `bun run gen:config` rewrites `packages/bun-rdkafka/src/core/librdkafka-config.ts` from the fetched `CONFIGURATION.md` (the `Producer`/`KafkaConsumer` constructor types and editor completion come from that file).
 - CMake options: `BRK_STATIC_DEPS=ON` (fully static OpenSSL/zlib/zstd/lz4 — release builds; currently a to-do that errors with guidance), `BRK_USE_SYSTEM_RDKAFKA=ON` (use `find_package(RdKafka)`, e.g. from vcpkg on Windows — see `native/vcpkg.json`).
 - OIDC support requires `WITH_CURL=ON` (currently off; see the note in `native/CMakeLists.txt`).
 - On memory-constrained machines build with `cmake --build native/build -j2`.

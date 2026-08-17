@@ -374,6 +374,14 @@ COLD state:  no consumer running, producer outq_len == 0
   splits it into: (a) librdkafka properties → `brk_conf_set` per pair; (b) `js.*` properties →
   JS-layer configuration; (c) function properties (`rebalance_cb`, `offset_commit_cb`,
   `oauthbearer_token_refresh_cb`) → registered as JS handlers.
+- **Typed on the outside, untyped on the inside:** the public constructors take
+  `ProducerConfig` / `KafkaConsumerConfig` / `AdminClientConfig` (+ `ProducerTopicConfig` /
+  `ConsumerTopicConfig`) = librdkafka's properties as generated type aliases
+  (`core/librdkafka-config.ts`, produced by `bun run gen:config` from the pinned librdkafka's
+  `CONFIGURATION.md`, JSDoc = description/default/range) ∩ `JsConfig` (the `js.*` keys) ∩ the
+  supported callback properties. Type aliases rather than interfaces so they stay assignable to
+  the `Record<string, unknown>` the builder consumes. Validation stays where it is (librdkafka
+  for its properties, the builder for `js.*`) — the types are for editors, not enforcement.
 - `LibrdKafkaError` mirrors upstream: `{ message, code, errno, origin, isFatal, isRetriable, isTxnRequiresAbort }`; `CODES.ERRORS` generated from the `rd_kafka_resp_err_t` table
   (script generates it from the librdkafka header at build time, committed into the repo).
 

@@ -16,11 +16,12 @@
  * `Producer.produceInternal` (opaque_id) — no separate mechanism needed.
  */
 
-import type { ClientConfig } from "../core/config.ts";
+import type { ProducerTopicConfig } from "../core/librdkafka-config.ts";
 import { ERROR_CODES, LibrdKafkaError } from "../core/errors.ts";
 import type { ClientInternalOptions } from "./client.ts";
 import {
   Producer,
+  type ProducerConfig,
   type DeliveryReportPayload,
   type ProduceHeaders,
   type ProduceValue,
@@ -96,8 +97,8 @@ export class HighLevelProducer extends Producer {
   private valueSerializer: SerializerSlot = { needsTopic: false, fn: identitySerializer };
 
   constructor(
-    globalConf?: ClientConfig,
-    topicConf?: ClientConfig,
+    globalConf?: ProducerConfig,
+    topicConf?: ProducerTopicConfig,
     internal: ClientInternalOptions = {},
   ) {
     super(globalConf, topicConf, internal);

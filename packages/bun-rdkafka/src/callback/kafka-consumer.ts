@@ -54,7 +54,13 @@ import type {
 import type { ClientConfig } from "../core/config.ts";
 import { ERROR_CODES, LibrdKafkaError } from "../core/errors.ts";
 import type { NativeClient } from "../core/native-client.ts";
-import { Client, type ClientEventMap, type ClientInternalOptions } from "./client.ts";
+import {
+  Client,
+  type ClientEventMap,
+  type ClientGlobalConfig,
+  type ClientInternalOptions,
+} from "./client.ts";
+import type { ConsumerGlobalConfig, ConsumerTopicConfig } from "../core/librdkafka-config.ts";
 import { ConsumerStream, type ReadStreamOptions } from "./consumer-stream.ts";
 
 /* ========================================================================== */
@@ -206,6 +212,38 @@ interface PendingConsume {
 /* KafkaConsumer                                                               */
 /* ========================================================================== */
 
+/** `rebalance_cb(err, assignments)` — when set, the user assigns/unassigns (as upstream). */
+export type RebalanceCallback = (
+  this: KafkaConsumer,
+  err: LibrdKafkaError,
+  assignments: TopicPartition[],
+) => void;
+
+/** `offset_commit_cb(err, offsets)` — result of each (auto or async) commit. */
+export type OffsetCommitCallback = (
+  this: KafkaConsumer,
+  err: LibrdKafkaError | null,
+  offsets: TopicPartitionOffset[],
+) => void;
+
+/**
+ * `new KafkaConsumer(conf, topicConf?)` — librdkafka's consumer properties
+ * ({@link ConsumerGlobalConfig}; topic-level ones such as `auto.offset.reset`
+ * may also be given here, librdkafka applies them to the default topic conf),
+ * the `js.*` options, and the callbacks below.
+ */
+export type KafkaConsumerConfig = ConsumerGlobalConfig &
+  ConsumerTopicConfig &
+  ClientGlobalConfig & {
+    /**
+     * `true` = default assign/unassign + `rebalance` event; a function takes over
+     * the (incremental) assign/unassign — see {@link RebalanceCallback}.
+     */
+    rebalance_cb?: boolean | RebalanceCallback;
+    /** `true` enables the `offset.commit` event; a function is also called per commit. */
+    offset_commit_cb?: boolean | OffsetCommitCallback;
+  };
+
 /** Events of {@link KafkaConsumer}: the client events plus the consumer's own. */
 export interface KafkaConsumerEventMap extends ClientEventMap {
   /** One message (flowing mode, after `consume()` with no arguments). */
@@ -235,8 +273,8 @@ export class KafkaConsumer extends Client<KafkaConsumerEventMap> {
    * (upstream `KafkaConsumer.createReadStream`). See `callback/consumer-stream.ts`.
    */
   static createReadStream(
-    conf: ClientConfig,
-    topicConf: ClientConfig | undefined,
+    conf: KafkaConsumerConfig,
+    topicConf: ConsumerTopicConfig | undefined,
     streamOptions: ReadStreamOptions | number,
   ): ConsumerStream {
     return new ConsumerStream(new KafkaConsumer(conf, topicConf), streamOptions);
@@ -260,8 +298,8 @@ export class KafkaConsumer extends Client<KafkaConsumerEventMap> {
   #consumeTimeoutMs = DEFAULT_CONSUME_TIMEOUT_MS;
 
   constructor(
-    conf?: ClientConfig,
-    topicConf?: ClientConfig,
+    conf?: KafkaConsumerConfig,
+    topicConf?: ConsumerTopicConfig,
     internal?: ClientInternalOptions,
   ) {
     super(conf, topicConf, BRK_CLIENT_CONSUMER, internal ?? {});

@@ -48,10 +48,12 @@ import {
   ConfigBuilder,
   type BuiltConfig,
   type ClientConfig,
+  type JsConfig,
   type ConfigCallbacks,
   type JsOptions,
 } from "../core/config.ts";
 import { ERROR_CODES, LibrdKafkaError } from "../core/errors.ts";
+import type { GlobalConfig } from "../core/librdkafka-config.ts";
 import {
   NativeClient,
   type NativeClientOptions,
@@ -195,6 +197,37 @@ function notConnectedError(context: string): LibrdKafkaError {
     context,
   });
 }
+
+/* ========================================================================== */
+/* Typed config                                                                */
+/* ========================================================================== */
+
+/**
+ * `oauthbearer_token_refresh_cb(oauthbearerConfig, done)` — hand the token to
+ * `done(err, token)` or return a `Promise<OauthBearerToken>` (KafkaJS style).
+ */
+export type OauthBearerTokenRefreshCallback = (
+  oauthbearerConfig: string,
+  done: OauthBearerTokenCallback,
+) => unknown;
+
+/** Callback properties every client accepts in its config. */
+export type ClientCallbackConfig = {
+  /**
+   * `true` re-emits every raw event frame as `event.event` / `event`; a function
+   * is registered as the `event.event` listener.
+   */
+  event_cb?: boolean | ((event: BrkEvent) => void);
+  /** Required with `sasl.mechanism=OAUTHBEARER` — see {@link OauthBearerTokenRefreshCallback}. */
+  oauthbearer_token_refresh_cb?: OauthBearerTokenRefreshCallback;
+};
+
+/**
+ * Config accepted by every client: librdkafka's global properties + `js.*` +
+ * the common callbacks. Producer/consumer add their own on top
+ * ({@link ProducerConfig}, {@link KafkaConsumerConfig}).
+ */
+export type ClientGlobalConfig = GlobalConfig & JsConfig & ClientCallbackConfig;
 
 /* ========================================================================== */
 /* Typed events                                                                */

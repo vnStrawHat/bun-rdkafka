@@ -24,6 +24,8 @@
  * default topic conf).
  */
 
+import type { JsConfig } from "../core/config.ts";
+import type { GlobalConfig } from "../core/librdkafka-config.ts";
 import { ERROR_CODES } from "../core/errors.ts";
 import { KafkaJSError } from "./errors.ts";
 
@@ -76,11 +78,16 @@ export interface CommonKafkaJSBlock {
   [key: string]: unknown;
 }
 
-/** Raw config: `{ kafkaJS?: {...} }` + pass-through librdkafka properties. */
-export interface CommonRawConfig {
-  kafkaJS?: CommonKafkaJSBlock;
-  [key: string]: unknown;
-}
+/**
+ * Raw config: `{ kafkaJS?: {...} }` + pass-through librdkafka properties
+ * (typed via {@link GlobalConfig} for completion) + `js.*` options. The index
+ * signature keeps producer/consumer-specific librdkafka keys accepted here too.
+ */
+export type CommonRawConfig = GlobalConfig &
+  JsConfig & {
+    kafkaJS?: CommonKafkaJSBlock;
+    [key: string]: unknown;
+  };
 
 /* ========================================================================== */
 /* Logger (logLevel, DefaultLogger, trampoline — as in upstream _common.js)    */

@@ -28,7 +28,16 @@ export {
 } from "./callback/client.ts";
 
 export { CODES, ERROR_CODES, LibrdKafkaError } from "./core/errors.ts";
-export type { ClientConfig } from "./core/config.ts";
+export type { ClientConfig, JsConfig } from "./core/config.ts";
+export {
+  LIBRDKAFKA_CONFIG_VERSION,
+  type ConsumerGlobalConfig,
+  type ConsumerTopicConfig,
+  type GlobalConfig,
+  type ProducerGlobalConfig,
+  type ProducerTopicConfig,
+  type TopicConfig,
+} from "./core/librdkafka-config.ts";
 
 import type { ClientConfig } from "./core/config.ts";
 import { KafkaConsumer } from "./callback/kafka-consumer.ts";
@@ -96,13 +105,16 @@ export {
   type TopicPartitionDescription,
 } from "./callback/admin.ts";
 export type {
+  ClientCallbackConfig,
   ClientEventMap,
   ClientEvents,
+  ClientGlobalConfig,
   EventListenerMap,
   OauthBearerToken,
   OauthBearerTokenCallback,
+  OauthBearerTokenRefreshCallback,
 } from "./callback/client.ts";
-export type { AdminClientEventMap } from "./callback/admin.ts";
+export type { AdminClientConfig, AdminClientEventMap } from "./callback/admin.ts";
 
 // M2 — Producer (Callback API)
 // Note: the TopicPartitionOffset type uses kafka-consumer.ts's export (M3);
@@ -117,6 +129,7 @@ export {
   type PartitionerCallback,
   type ProduceHeaders,
   type ProduceValue,
+  type ProducerConfig,
   type ProducerEventMap,
   type ProducerEvents,
   type TransactionCallback,
@@ -132,8 +145,11 @@ export {
 export {
   KafkaConsumer,
   type Assignment,
+  type KafkaConsumerConfig,
   type KafkaConsumerEventMap,
   type KafkaConsumerEvents,
+  type OffsetCommitCallback,
+  type RebalanceCallback,
   type CommittedCallback,
   type ConsumeCallback,
   type EofEvent,
