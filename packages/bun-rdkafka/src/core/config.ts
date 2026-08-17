@@ -44,10 +44,14 @@ export type JsConfig = {
    */
   "js.poll.interval.ms"?: number;
   /**
-   * Size (bytes) of the reusable buffer one `brk_consume_batch` FFI call fills. Grows
-   * automatically if a single message does not fit — a performance knob, not a limit.
+   * Upper bound (bytes) of the buffer one `brk_consume_batch` FFI call fills. Each
+   * batch gets a fresh buffer sized to the traffic (up to this value) and message
+   * key/value are views into it — no per-message copy — so a retained message
+   * keeps at most one such buffer alive. Grows automatically when a single message
+   * does not fit: a performance knob, not a limit. Values above ~512 KiB are slower
+   * on most allocators (fresh pages per batch).
    *
-   * @default 4194304
+   * @default 262144
    */
   "js.consume.buffer.bytes"?: number;
   /**
@@ -105,7 +109,7 @@ export interface JsOptions {
   pollIdleMaxMs: number;
   /** `js.poll.interval.ms` — poll interval while COLD. */
   pollIntervalMs: number;
-  /** `js.consume.buffer.bytes` — reusable buffer for `brk_consume_batch`. */
+  /** `js.consume.buffer.bytes` — per-batch buffer cap for `brk_consume_batch`. */
   consumeBufferBytes: number;
   /** `js.event.buffer.bytes` — reusable buffer for `brk_events_poll`. */
   eventBufferBytes: number;
@@ -169,7 +173,7 @@ export const JS_OPTION_SPECS: Readonly<Record<string, JsOptionSpec>> = Object.fr
 export const DEFAULT_JS_OPTIONS: Readonly<JsOptions> = Object.freeze({
   pollIdleMaxMs: 50,
   pollIntervalMs: 500,
-  consumeBufferBytes: 4 * 1024 * 1024,
+  consumeBufferBytes: 256 * 1024,
   eventBufferBytes: 256 * 1024,
   producerMaxPending: 100_000,
   consumerMaxBatchSize: 32,

@@ -10,16 +10,14 @@
  * | 4 | MESSAGE BATCH   | C→JS  | {@link decodeMessageBatch} |
  * | 5 | EVENT FRAME     | C→JS  | {@link decodeEventFrames} |
  *
- * The default mode is **copy** (`copy: true`): key/value/headers are copied
- * out of the reusable buffer, so a message lives independently of the next
- * poll (ADR-6).
- *
- * TODO(M6): zero-copy mode (`js.consumer.zero.copy=true`) — the decoder already
- * supports it via `copy: false`; what remains is the lifetime contract at the
- * consumer layer (only valid inside `eachMessage`/`eachBatch`) and keeping
- * indexes instead of objects.
+ * MESSAGE BATCH decoding has two modes: `copy: true` copies key/value/headers
+ * out of the buffer (as Buffers); `copy: false` hands out views. The consume
+ * path uses views over a buffer that is retired after every batch (a message
+ * therefore lives independently of the next poll — ADR-6 — without a
+ * per-message copy); see `NativeClient.consumeBatch`.
  */
 
+import { Buffer } from "node:buffer";
 import {
   BRK_EVENT_ADMIN_RESULT,
   BRK_EVENT_DR,
@@ -380,8 +378,20 @@ export interface DecodedMessage {
 export interface MessageDecodeOptions {
   topics: TopicNameTable;
   fetchTopicName?: TopicNameFetcher | undefined;
-  /** `false` = zero-copy view into the reusable buffer (opt-in, see TODO M6). */
+  /**
+   * `true` (default) copies key/value/header values out of `buf` (as Buffers);
+   * `false` returns views into `buf` — only safe when `buf` is never reused,
+   * which is how {@link NativeClient.consumeBatch} calls it (a fresh buffer
+   * per batch, see the note there).
+   */
   copy?: boolean;
+}
+
+/** Result of {@link decodeMessageBatchWithSize}. */
+export interface DecodedMessageBatch {
+  messages: DecodedMessage[];
+  /** Bytes of `buf` consumed by the `count` records. */
+  byteLength: number;
 }
 
 /**
@@ -393,47 +403,147 @@ export function decodeMessageBatch(
   count: number,
   opts: MessageDecodeOptions,
 ): DecodedMessage[] {
-  const r = new BufReader(buf);
-  const copy = opts.copy !== false;
-  const out: DecodedMessage[] = new Array<DecodedMessage>(count);
-  for (let i = 0; i < count; i++) {
-    out[i] = decodeMessage(r, opts, copy);
-  }
-  return out;
+  return decodeMessageBatchWithSize(buf, count, opts).messages;
 }
 
-function decodeMessage(
-  r: BufReader,
+/**
+ * {@link decodeMessageBatch} that also reports how many bytes the records
+ * occupied (the consume path sizes its next buffer from it).
+ *
+ * This is the hottest decoder, so it reads through a local DataView/offset
+ * instead of {@link BufReader} (one bounds check per fixed-size record header
+ * and one per variable-length field, no per-field call overhead) and reads
+ * i64s as two u32s (no BigInt). Layout per record:
+ * `i32 topic_id, i32 partition, i64 offset, i64 timestamp, u8 ts_type, i16 err,
+ *  i32 key_len, bytes, i32 value_len, bytes, u16 header_count,
+ *  header_count × { u16 key_len, bytes, i32 value_len, bytes }, i32 leader_epoch`.
+ */
+export function decodeMessageBatchWithSize(
+  buf: Uint8Array,
+  count: number,
   opts: MessageDecodeOptions,
-  copy: boolean,
-): DecodedMessage {
-  const topicId = r.i32();
-  const partition = r.i32();
-  const offset = r.i64Number();
-  const timestamp = r.i64Number();
-  const timestampType = r.u8() as RdKafkaTimestampType;
-  const err = r.i16();
-  const key = r.bytesI32(copy);
-  const value = r.bytesI32(copy);
-  const headerCount = r.u16();
-  const headers: DecodedHeader[] = new Array<DecodedHeader>(headerCount);
-  for (let h = 0; h < headerCount; h++) {
-    headers[h] = { key: r.stringU16(), value: r.bytesI32(copy) };
+): DecodedMessageBatch {
+  const copy = opts.copy !== false;
+  const topics = opts.topics;
+  const fetchTopicName = opts.fetchTopicName;
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const len = buf.byteLength;
+  const out: DecodedMessage[] = new Array<DecodedMessage>(count);
+  let pos = 0;
+  let lastTopicId = -1;
+  let lastTopic = "";
+
+  for (let i = 0; i < count; i++) {
+    // Fixed header: 4 + 4 + 8 + 8 + 1 + 2 = 27 bytes.
+    if (pos + MSG_FIXED_HEADER > len) throw truncated(MSG_FIXED_HEADER, pos, len);
+    const topicId = view.getInt32(pos, true);
+    const partition = view.getInt32(pos + 4, true);
+    const offset = readI64Number(view, pos + 8);
+    const timestamp = readI64Number(view, pos + 16);
+    const timestampType = view.getUint8(pos + 24) as RdKafkaTimestampType;
+    const err = view.getInt16(pos + 25, true);
+    pos += MSG_FIXED_HEADER;
+
+    // key
+    if (pos + 4 > len) throw truncated(4, pos, len);
+    let n = view.getInt32(pos, true);
+    pos += 4;
+    let key: Uint8Array | null = null;
+    if (n !== NULL_LENGTH) {
+      if (n < 0 || pos + n > len) throw badLength(n, pos - 4, len);
+      key = copy ? Buffer.copyBytesFrom(buf, pos, n) : buf.subarray(pos, pos + n);
+      pos += n;
+    }
+
+    // value
+    if (pos + 4 > len) throw truncated(4, pos, len);
+    n = view.getInt32(pos, true);
+    pos += 4;
+    let value: Uint8Array | null = null;
+    if (n !== NULL_LENGTH) {
+      if (n < 0 || pos + n > len) throw badLength(n, pos - 4, len);
+      value = copy ? Buffer.copyBytesFrom(buf, pos, n) : buf.subarray(pos, pos + n);
+      pos += n;
+    }
+
+    // headers
+    if (pos + 2 > len) throw truncated(2, pos, len);
+    const headerCount = view.getUint16(pos, true);
+    pos += 2;
+    const headers: DecodedHeader[] = new Array<DecodedHeader>(headerCount);
+    for (let h = 0; h < headerCount; h++) {
+      if (pos + 2 > len) throw truncated(2, pos, len);
+      const klen = view.getUint16(pos, true);
+      pos += 2;
+      if (pos + klen > len) throw truncated(klen, pos, len);
+      const hkey = klen === 0 ? "" : HEADER_KEY_DECODER.decode(buf.subarray(pos, pos + klen));
+      pos += klen;
+      if (pos + 4 > len) throw truncated(4, pos, len);
+      n = view.getInt32(pos, true);
+      pos += 4;
+      let hval: Uint8Array | null = null;
+      if (n !== NULL_LENGTH) {
+        if (n < 0 || pos + n > len) throw badLength(n, pos - 4, len);
+        hval = copy ? Buffer.copyBytesFrom(buf, pos, n) : buf.subarray(pos, pos + n);
+        pos += n;
+      }
+      headers[h] = { key: hkey, value: hval };
+    }
+
+    if (pos + 4 > len) throw truncated(4, pos, len);
+    const leaderEpoch = view.getInt32(pos, true);
+    pos += 4;
+
+    // Consecutive records usually share a topic: skip the Map lookup.
+    if (topicId !== lastTopicId) {
+      lastTopic = topics.resolve(topicId, fetchTopicName);
+      lastTopicId = topicId;
+    }
+
+    out[i] = {
+      topicId,
+      topic: lastTopic,
+      partition,
+      offset,
+      timestamp,
+      timestampType,
+      err,
+      key,
+      value,
+      headers,
+      leaderEpoch,
+    };
   }
-  const leaderEpoch = r.i32();
-  return {
-    topicId,
-    topic: opts.topics.resolve(topicId, opts.fetchTopicName),
-    partition,
-    offset,
-    timestamp,
-    timestampType,
-    err,
-    key,
-    value,
-    headers,
-    leaderEpoch,
-  };
+  return { messages: out, byteLength: pos };
+}
+
+const MSG_FIXED_HEADER = 27;
+const HEADER_KEY_DECODER = /* @__PURE__ */ new TextDecoder("utf-8", { fatal: false });
+
+/** i64 → number via two u32 reads (no BigInt); throws beyond ±2^53. */
+function readI64Number(view: DataView, at: number): number {
+  const lo = view.getUint32(at, true);
+  const hi = view.getInt32(at + 4, true);
+  if (hi >= 0x200000 || hi < -0x200000) {
+    throw new BinaryDecodeError(
+      `i64 value ${view.getBigInt64(at, true)} is not representable as a number`,
+      at,
+    );
+  }
+  return hi * 4294967296 + lo;
+}
+
+function truncated(n: number, pos: number, len: number): BinaryDecodeError {
+  return new BinaryDecodeError(
+    `need ${n} bytes but only ${len - pos} remain (buffer is ${len} bytes)`,
+    pos,
+  );
+}
+
+function badLength(n: number, at: number, len: number): BinaryDecodeError {
+  return n < 0
+    ? new BinaryDecodeError(`invalid negative length: ${n}`, at)
+    : truncated(n, at + 4, len);
 }
 
 /* ========================================================================== */

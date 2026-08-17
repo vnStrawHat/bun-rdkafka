@@ -374,6 +374,48 @@ describe("reusable buffers: growing per brk_last_required_size + one retry", () 
     expect(str(msgs[0]!.value)).toBe("hi");
   });
 
+  test("consumeBatch retires its buffer: earlier messages survive later batches", () => {
+    const batchA = encodeMessageBatch([
+      { topicId: 0, partition: 0, offset: 1, timestampMs: 5, timestampType: 1, err: 0, key: "k1", value: "first" },
+    ]);
+    const batchB = encodeMessageBatch([
+      { topicId: 0, partition: 0, offset: 2, timestampMs: 6, timestampType: 1, err: 0, key: "k2", value: "second-longer" },
+    ]);
+    const buffers: Uint8Array[] = [];
+    let call = 0;
+    const fake = fakeNative({
+      brk_consume_batch: (_h: unknown, buf: Uint8Array) => {
+        buffers.push(buf);
+        buf.set(call++ === 0 ? batchA : batchB);
+        return 1;
+      },
+      brk_topic_name: (_h: unknown, _id: unknown, buf: Uint8Array) => {
+        const name = utf8("orders");
+        buf.set(name);
+        return name.length;
+      },
+    });
+    const client = new NativeClient({
+      type: BRK_CLIENT_CONSUMER,
+      properties: [],
+      native: fake.native,
+      onLeak: () => {},
+    });
+    client.connect();
+
+    const [a] = client.consumeBatch(10);
+    const [b] = client.consumeBatch(10);
+    // Views (no per-message copy) into a buffer that is never handed to C again.
+    expect(buffers[0]).not.toBe(buffers[1]);
+    expect(a!.value!.buffer).toBe(buffers[0]!.buffer);
+    expect(Buffer.isBuffer(a!.value)).toBe(true);
+    expect(str(a!.value)).toBe("first");
+    expect(str(a!.key)).toBe("k1");
+    expect(str(b!.value)).toBe("second-longer");
+    // The next buffer follows the traffic: 2× the bytes used, at least 4 KiB.
+    expect(buffers[1]!.length).toBe(4096);
+  });
+
   test("still too small after the retry → throws BRK_ERR_BUFFER_TOO_SMALL (no infinite retry)", () => {
     let attempts = 0;
     const fake = fakeNative({

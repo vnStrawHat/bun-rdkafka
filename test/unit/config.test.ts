@@ -76,7 +76,7 @@ describe("option js.*", () => {
     const { js } = buildConfig({});
     expect(js).toEqual(DEFAULT_JS_OPTIONS);
     expect(js.pollIdleMaxMs).toBe(50);
-    expect(js.consumeBufferBytes).toBe(4 * 1024 * 1024);
+    expect(js.consumeBufferBytes).toBe(256 * 1024);
     expect(js.producerMaxPending).toBe(100_000);
     expect(js.consumerZeroCopy).toBe(false);
   });

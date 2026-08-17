@@ -9,6 +9,8 @@
  *  - strings are UTF-8, NOT NUL-terminated inside packed buffers.
  */
 
+import { Buffer } from "node:buffer";
+
 const TEXT_ENCODER = /* @__PURE__ */ new TextEncoder();
 const TEXT_DECODER = /* @__PURE__ */ new TextDecoder("utf-8", { fatal: false });
 
@@ -315,12 +317,22 @@ export class BufReader {
   }
 
   /** i64 → number; throws if it exceeds `Number.MAX_SAFE_INTEGER`. */
+  /**
+   * Reads an i64 as a `number` without going through BigInt (two u32 reads);
+   * throws when the value does not fit in 53 bits.
+   */
   i64Number(): number {
-    const v = this.i64();
-    if (v > 9007199254740991n || v < -9007199254740991n) {
-      throw new BinaryDecodeError(`i64 value ${v} is not representable as a number`, this.pos - 8);
+    const at = this.need(8);
+    const lo = this.view.getUint32(at, true);
+    const hi = this.view.getInt32(at + 4, true);
+    // |hi| < 2^21 ⇔ the value fits in ±2^53 (with a 1-ulp slack at the edges).
+    if (hi >= 0x200000 || hi < -0x200000) {
+      throw new BinaryDecodeError(
+        `i64 value ${this.view.getBigInt64(at, true)} is not representable as a number`,
+        at,
+      );
     }
-    return Number(v);
+    return hi * 4294967296 + lo;
   }
 
   /** A view (no copy) over the next `n` bytes. */
@@ -332,7 +344,11 @@ export class BufReader {
   /** A copy of the next `n` bytes. */
   bytesCopy(n: number): Uint8Array {
     const at = this.need(n);
-    return this.bytesView.slice(at, at + n);
+    // `Buffer.copyBytesFrom` copies straight into a Buffer. This is ~5x cheaper
+    // in Bun than `slice()` followed by `Buffer.from(ab, off, len)` at the
+    // consumer layer: creating a second view forces JSC to materialize the
+    // slice's ArrayBuffer, which is the expensive part.
+    return Buffer.copyBytesFrom(this.bytesView, at, n);
   }
 
   /** Decodes the next `n` bytes as a UTF-8 string. */

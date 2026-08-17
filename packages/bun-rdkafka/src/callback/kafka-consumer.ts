@@ -52,6 +52,7 @@ import type {
   TopicPartitionInput,
 } from "../core/batch-decoder.ts";
 import type { ClientConfig } from "../core/config.ts";
+import { Fifo } from "../core/fifo.ts";
 import { ERROR_CODES, LibrdKafkaError } from "../core/errors.ts";
 import type { NativeClient } from "../core/native-client.ts";
 import {
@@ -138,9 +139,15 @@ const CONSUME_BATCH_MAX = 500;
 /* Shape-conversion utilities                                                  */
 /* ========================================================================== */
 
-/** Wraps a Uint8Array (already copied out of the C buffer) as a Buffer with NO extra copy. */
+/**
+ * Wraps a Uint8Array (already copied out of the C buffer) as a Buffer with NO
+ * extra copy. The decoder already hands out Buffers in copy mode, so this is
+ * normally an identity check — the `Buffer.from(ab, off, len)` fallback is
+ * expensive in Bun (it materializes the ArrayBuffer) and only exists for
+ * foreign Uint8Arrays.
+ */
 function asBuffer(bytes: Uint8Array): Buffer {
-  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return bytes instanceof Buffer ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 }
 
 /** `DecodedMessage` (core) → `Message` (upstream shape, field for field). */
@@ -287,7 +294,7 @@ export class KafkaConsumer extends Client<KafkaConsumerEventMap> {
   /** Pending non-flowing requests. */
   readonly #pending: PendingConsume[] = [];
   /** Converted messages awaiting dispatch (see the buffer note at the top of this file). */
-  readonly #buffer: Message[] = [];
+  readonly #buffer = new Fifo<Message>();
 
   #subscribedTopics: SubscribeTopicList | null = null;
   /** Does the consumer still hold an assignment (manual or via rebalance)? */
@@ -568,10 +575,10 @@ export class KafkaConsumer extends Client<KafkaConsumerEventMap> {
     this.#flowingCb = undefined;
     const pending = this.#pending.splice(0);
     for (const req of pending) {
-      const batch = this.#buffer.splice(0, req.n);
+      const batch = this.#buffer.take(req.n);
       queueMicrotask(() => req.cb(null, batch));
     }
-    this.#buffer.length = 0;
+    this.#buffer.clear();
     this.#subscribedTopics = null;
     this.#hasAssignment = false;
     return super.disconnect(cb);
@@ -650,7 +657,7 @@ export class KafkaConsumer extends Client<KafkaConsumerEventMap> {
         continue;
       }
       this.#pending.shift();
-      const batch = this.#buffer.splice(0, req.n);
+      const batch = this.#buffer.take(req.n);
       served += batch.length;
       queueMicrotask(() => req.cb(null, batch));
     }

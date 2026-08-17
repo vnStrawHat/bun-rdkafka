@@ -35,6 +35,7 @@
  * must be buffered, never dropped.
  */
 
+import { Buffer } from "node:buffer";
 import { CString, type Pointer } from "bun:ffi";
 import { loadNative, type BrkNative } from "../ffi/loader.ts";
 import {
@@ -52,7 +53,7 @@ import { BufWriter } from "./binary.ts";
 import {
   TopicNameTable,
   decodeEventFrames,
-  decodeMessageBatch,
+  decodeMessageBatchWithSize,
   decodeStringList,
   decodeTplBuffer,
   encodeProduceBatch,
@@ -153,6 +154,19 @@ export interface WatermarkOffsets {
   high: number;
 }
 
+/** Smallest fresh consume buffer (bytes) — see {@link NativeClient.consumeBatch}. */
+const CONSUME_BUF_MIN = 4096;
+/** First consume buffer; it then tracks the traffic (2× the last batch). */
+const CONSUME_BUF_INITIAL = 64 * 1024;
+
+/**
+ * Consume buffers are Buffers (so message views come out as Buffers) and are
+ * not zero-filled: C writes the prefix that gets decoded, nothing else is read.
+ */
+function allocConsumeBuffer(size: number): Uint8Array {
+  return Buffer.allocUnsafeSlow(size);
+}
+
 /** Messages per prefetch frame (matches the callback layer's CONSUME_BATCH_MAX). */
 const CONSUME_PREFETCH_MAX_MSGS = 500;
 const ERRSTR_CAP = 512;
@@ -205,7 +219,11 @@ export class NativeClient {
     this.js = { ...DEFAULT_JS_OPTIONS, ...options.js };
     this.nativeLib = options.native;
     this.onLeak = options.onLeak;
-    this.consumeBuf = new Uint8Array(this.js.consumeBufferBytes);
+    this.consumeBuf = allocConsumeBuffer(
+      this.js.consumePrefetch
+        ? this.js.consumeBufferBytes
+        : Math.min(CONSUME_BUF_INITIAL, this.js.consumeBufferBytes),
+    );
     this.eventBuf = new Uint8Array(this.js.eventBufferBytes);
     this.topics = new TopicNameTable((topicId) => this.topicName(topicId));
   }
@@ -402,7 +420,7 @@ export class NativeClient {
     if (ret === BRK_ERR_BUFFER_TOO_SMALL) {
       const required = this.native.brk_last_required_size(this.handle);
       const next = Math.max(required > 0 ? required : 0, buf.length * 2);
-      buf = new Uint8Array(next);
+      buf = slot === "consume" ? allocConsumeBuffer(next) : new Uint8Array(next);
       this.setBuffer(slot, buf);
       ret = call(buf);
     }
@@ -616,13 +634,31 @@ export class NativeClient {
    * Also the `consumer_q` pump: it must be called regularly once subscribed so
    * REBALANCE/OFFSET_COMMIT surface via `pollEvents()`.
    */
-  consumeBatch(maxMsgs: number, timeoutMs = 0, copy = true): DecodedMessage[] {
+  consumeBatch(maxMsgs: number, timeoutMs = 0): DecodedMessage[] {
     const handle = this.assertType(BRK_CLIENT_CONSUMER, "consumeBatch");
     const count = this.withGrowingBuffer("consume", "brk_consume_batch", (buf) =>
       this.native.brk_consume_batch(handle, buf, buf.length, maxMsgs, timeoutMs),
     );
     if (count === 0) return [];
-    return decodeMessageBatch(this.consumeBuf, count, { topics: this.topics, copy });
+    // Zero per-message copies: key/value/headers are views into the batch
+    // buffer, which is retired right here (never written to again) — so they
+    // stay valid for as long as the app keeps them. Keeping one message alive
+    // keeps its whole batch buffer alive; the next buffer is therefore sized
+    // to the traffic (2× the last batch, within
+    // [CONSUME_BUF_MIN, js.consume.buffer.bytes]) to bound that. Prefetch
+    // frames are always `js.consume.buffer.bytes` (or grown), so keep the
+    // full size there and avoid a BUFFER_TOO_SMALL round-trip per frame.
+    const buf = this.consumeBuf;
+    const { messages, byteLength } = decodeMessageBatchWithSize(buf, count, {
+      topics: this.topics,
+      copy: false,
+    });
+    this.consumeBuf = allocConsumeBuffer(
+      this.js.consumePrefetch
+        ? Math.max(this.js.consumeBufferBytes, buf.length)
+        : Math.min(Math.max(CONSUME_BUF_MIN, byteLength * 2), this.js.consumeBufferBytes),
+    );
+    return messages;
   }
 
   /** `brk_commit`. Empty/`null` `offsets` = commit all current positions. */
