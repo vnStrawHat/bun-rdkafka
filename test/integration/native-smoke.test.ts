@@ -15,6 +15,7 @@ import {
   startKafka,
   stopKafka,
 } from "./docker-kafka";
+import { BRK_ABI_VERSION } from "../../packages/bun-rdkafka/src/ffi/types.ts";
 
 const LIB_PATH =
   process.env.BUN_RDKAFKA_LIB_PATH ??
@@ -68,7 +69,7 @@ describe.skipIf(!hasLib)("native shim smoke", () => {
   type Pointer = NonNullable<ReturnType<typeof lib.symbols.brk_conf_new>>;
 
   test("abi + librdkafka version", () => {
-    expect(lib.symbols.brk_abi_version()).toBe(1);
+    expect(lib.symbols.brk_abi_version()).toBe(BRK_ABI_VERSION);
     const v = lib.symbols.brk_librdkafka_version();
     expect(String(v)).toMatch(/^2\.15\./);
   });
