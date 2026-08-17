@@ -44,6 +44,7 @@ import {
   type DisconnectCallback,
   type Metadata,
 } from "./client.ts";
+import { ProducerStream, type WriteStreamOptions } from "./producer-stream.ts";
 
 /* ========================================================================== */
 /* Public types                                                                */
@@ -194,6 +195,18 @@ export function normalizeHeaders(headers: ProduceHeaders | undefined): ProduceHe
 /* ========================================================================== */
 
 export class Producer extends Client {
+  /**
+   * Creates a `Producer` and wraps it in a Writable {@link ProducerStream}
+   * (upstream `Producer.createWriteStream`). See `callback/producer-stream.ts`.
+   */
+  static createWriteStream(
+    conf: ClientConfig,
+    topicConf: ClientConfig | undefined,
+    streamOptions: WriteStreamOptions | string,
+  ): ProducerStream {
+    return new ProducerStream(new Producer(conf, topicConf), streamOptions);
+  }
+
   /** The DR ledger: its record type is {@link StagedMeta}. */
   protected readonly ledger: DeliveryLedger<StagedMeta>;
 

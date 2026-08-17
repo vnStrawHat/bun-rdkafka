@@ -208,6 +208,7 @@ binary protocol, the PollScheduler, no event-loop blocking, no crashes.
       `partitioner_cb`, `HighLevelProducer.setTopic{Key,Value}Serializer`,
       `KafkaConsumer.offsetsForTimes`, `Client.getLastError()`. Still excluded (not
       applicable to bun:ffi): `getClient`, `setPollInBackground`, `setDefaultConsumeLoopTimeoutDelay`.
+- [x] Stream API landed (2026-08-17): `Producer.createWriteStream` / `KafkaConsumer.createReadStream` + module-level `createReadStream`/`createWriteStream` (`ProducerStream` / `ConsumerStream` over `node:stream`), conformance exclusions removed, unit + integration tests, `examples/streams.ts`.
 - [ ] Re-walk the v1.0 acceptance checklist in spec §8; close remaining differences or record them publicly.
 - [ ] Tag `v1.0.0`.
 

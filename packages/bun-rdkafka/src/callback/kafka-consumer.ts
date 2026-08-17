@@ -55,6 +55,7 @@ import type { ClientConfig } from "../core/config.ts";
 import { ERROR_CODES, LibrdKafkaError } from "../core/errors.ts";
 import type { NativeClient } from "../core/native-client.ts";
 import { Client, type ClientInternalOptions } from "./client.ts";
+import { ConsumerStream, type ReadStreamOptions } from "./consumer-stream.ts";
 
 /* ========================================================================== */
 /* Public types (shapes of upstream's types/rdkafka.d.ts)                      */
@@ -206,6 +207,18 @@ interface PendingConsume {
 /* ========================================================================== */
 
 export class KafkaConsumer extends Client {
+  /**
+   * Creates a `KafkaConsumer` and wraps it in a Readable {@link ConsumerStream}
+   * (upstream `KafkaConsumer.createReadStream`). See `callback/consumer-stream.ts`.
+   */
+  static createReadStream(
+    conf: ClientConfig,
+    topicConf: ClientConfig | undefined,
+    streamOptions: ReadStreamOptions | number,
+  ): ConsumerStream {
+    return new ConsumerStream(new KafkaConsumer(conf, topicConf), streamOptions);
+  }
+
   /** Flowing mode enabled (`consume()` with no args). */
   #flowing = false;
   /** Per-message callback of `consume(cb)` (flowing). */

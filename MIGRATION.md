@@ -44,7 +44,28 @@ If you are migrating from **KafkaJS** (the original library) rather than from co
 | `setSaslCredentialProvider` (KafkaJS) | Not provided — this name is a bug in upstream's `.d.ts`; their implementation is `setSaslCredentials()`, which bun-rdkafka provides on all three API layers (verified with live re-authentication tests). | We follow upstream's implementation, not its typings. |
 | Extra `js.*` config namespace | bun-rdkafka-specific options: `js.poll.idle.max.ms`, `js.consume.buffer.bytes`, `js.producer.max.pending`, `js.consumer.max.batch.size`, etc. Unknown `js.*` keys throw (typo protection). | Runtime tuning knobs that have no librdkafka equivalent. |
 
+| Stream API (`createReadStream` / `createWriteStream`) | Same options, events, `stream.producer` / `stream.consumer` fields and `close(cb)`. Internals follow the modern `node:stream` lifecycle: `autoClose` maps to `autoDestroy`, so `stream.destroy()`, `pipeline()` and breaking out of `for await` also release the client; `ProducerStream` flushes before disconnecting; `ERR__QUEUE_FULL` retries with a 5→500 ms backoff instead of a fixed 500 ms; a byte-mode `ConsumerStream` skips tombstones (upstream pushes `null`, which ends the stream); `topics` may be omitted to read the consumer's existing subscription/assignment. | Built on Bun's `node:stream` rather than ported 1:1. |
+
 Also note the tuning recommendation that applies to any librdkafka client but bites harder here: set `fetch.queue.backoff.ms=10` on fast consumers (see README “Tuning notes”).
+
+### Stream API usage
+
+```ts
+import { Producer, KafkaConsumer } from "@vnstrawhat/bun-rdkafka";
+
+const writeStream = Producer.createWriteStream({ "bootstrap.servers": "localhost:9092" }, {}, { topic: "topic-name" });
+writeStream.on("error", (err) => console.error(err));
+writeStream.write(Buffer.from("Awesome message"));
+writeStream.end(); // autoClose: flush + disconnect
+
+const readStream = KafkaConsumer.createReadStream(
+  { "bootstrap.servers": "localhost:9092", "group.id": "g1" }, {}, { topics: ["topic-name"] },
+);
+readStream.on("data", (message) => console.log(message.value.toString()));
+readStream.consumer.commit(); // the underlying KafkaConsumer is exposed
+```
+
+See `examples/streams.ts` for a runnable version.
 
 ## 3. Not yet implemented
 
@@ -57,7 +78,6 @@ Each entry is tracked in `test/conformance/exclusions.ts` with a milestone; the 
 | `HighLevelProducer.setTopicKeySerializer` / `setTopicValueSerializer` | Global `setKeySerializer`/`setValueSerializer` are available. |
 | `KafkaJS.Consumer.logger()`, `dependentAdmin()`, `storeOffsets()`, `committed()` | Producer/Admin equivalents exist; the consumer variants need reconciliation with the run() scheduler. |
 | `features` (as a function) | Pending one shim symbol. |
-| Stream API (`createReadStream` / `createWriteStream`) | Outside the committed compatibility surface; under consideration. |
 | SASL OAUTHBEARER OIDC (`sasl.oauthbearer.method=oidc`) | Requires rebuilding the shim with `WITH_CURL=ON`. Custom token-refresh callbacks work today. |
 | `createTopics` `validateOnly`/`waitForLeaders`/`replicaAssignment`, `fetchOffsets` `resolveOffsets` | Throw “not implemented” — **exactly as upstream does**. |
 
