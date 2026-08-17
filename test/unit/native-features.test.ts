@@ -106,3 +106,24 @@ describe.skipIf(!libAvailable)("native builtin.features", () => {
     }
   });
 });
+
+describe.skipIf(!libAvailable)("features() (ABI 2: brk_features)", () => {
+  test("returns a non-empty list including the required features", async () => {
+    const { features } = await import("../../packages/bun-rdkafka/src/ffi/loader.ts");
+    const list = features();
+    expect(Array.isArray(list)).toBe(true);
+    expect(list.length).toBeGreaterThan(0);
+    for (const feature of REQUIRED_FEATURES) expect(list).toContain(feature);
+    // Every entry is a bare identifier (no whitespace, no empty strings).
+    for (const feature of list) expect(feature).toMatch(/^[a-z0-9_]+$/);
+  });
+
+  test("the default export exposes `features` and `librdkafkaVersion` as upstream-style values", async () => {
+    const { default: Kafka } = await import("../../packages/bun-rdkafka/src/index.ts");
+    expect(Kafka.features).toEqual(
+      (await import("../../packages/bun-rdkafka/src/ffi/loader.ts")).features(),
+    );
+    expect(typeof Kafka.librdkafkaVersion).toBe("string");
+    expect(Kafka.librdkafkaVersion).toMatch(/^\d+\.\d+\.\d+/);
+  });
+});

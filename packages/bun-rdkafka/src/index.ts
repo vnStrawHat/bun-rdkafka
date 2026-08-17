@@ -38,6 +38,13 @@ export type { ClientConfig } from "./core/config.ts";
  */
 export { librdkafkaVersion } from "./ffi/loader.ts";
 
+/**
+ * librdkafka's `builtin.features` (e.g. `["gzip", "ssl", "sasl_scram", …]`).
+ * Also a FUNCTION for the same lazy-load reason as `librdkafkaVersion`; the
+ * default export below exposes both as upstream-style getters.
+ */
+export { features } from "./ffi/loader.ts";
+
 /* M2/M3 append here:
  *   (M2: Producer/HighLevelProducer — exported below)
  *   (M3: KafkaConsumer — exported below)
@@ -122,3 +129,52 @@ export {
   type TopicPartitionOffset,
   type TopicPartitionOffsetAndMetadata,
 } from "./callback/kafka-consumer.ts";
+
+/* -------------------------------------------------------------------------- */
+/* Default export                                                              */
+/* -------------------------------------------------------------------------- */
+
+import { features as featuresFn, librdkafkaVersion as librdkafkaVersionFn } from "./ffi/loader.ts";
+import * as callbackClient from "./callback/client.ts";
+import * as coreErrors from "./core/errors.ts";
+import * as kafkaJsNamespace from "./kafkajs/index.ts";
+import * as kafkaJsAdmin from "./kafkajs/admin.ts";
+import * as callbackAdmin from "./callback/admin.ts";
+import * as callbackProducer from "./callback/producer.ts";
+import * as callbackHlp from "./callback/high-level-producer.ts";
+import * as callbackConsumer from "./callback/kafka-consumer.ts";
+
+/**
+ * Upstream-style default export (`import Kafka from "@vnstrawhat/bun-rdkafka"`
+ * ≙ `require('@confluentinc/kafka-javascript')`): the named exports plus
+ * `Kafka.features` / `Kafka.librdkafkaVersion` as **lazy getters** — reading
+ * them (not importing) triggers the native load, so the values behave exactly
+ * like upstream's constants without breaking the lazy-dlopen policy.
+ */
+const defaultExport = {
+  Client: callbackClient.Client,
+  Producer: callbackProducer.Producer,
+  HighLevelProducer: callbackHlp.HighLevelProducer,
+  KafkaConsumer: callbackConsumer.KafkaConsumer,
+  AdminClient: callbackAdmin.AdminClient,
+  OffsetSpec: callbackAdmin.OffsetSpec,
+  STAGING_MAX_RECORDS: callbackProducer.STAGING_MAX_RECORDS,
+  CODES: coreErrors.CODES,
+  ERROR_CODES: coreErrors.ERROR_CODES,
+  LibrdKafkaError: coreErrors.LibrdKafkaError,
+  KafkaJS: kafkaJsNamespace,
+  AclOperationTypes: kafkaJsAdmin.AclOperationTypes,
+  ConsumerGroupStates: kafkaJsAdmin.ConsumerGroupStates,
+  ConsumerGroupTypes: kafkaJsAdmin.ConsumerGroupTypes,
+  IsolationLevel: kafkaJsAdmin.IsolationLevel,
+  /** Lazy: loads the native library on first read. */
+  get features(): string[] {
+    return featuresFn();
+  },
+  /** Lazy: loads the native library on first read. */
+  get librdkafkaVersion(): string {
+    return librdkafkaVersionFn();
+  },
+};
+
+export default defaultExport;

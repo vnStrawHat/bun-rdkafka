@@ -630,6 +630,23 @@ export class NativeClient {
     return decodeTplBuffer(this.scratchBuf, { topics: this.topics });
   }
 
+  /**
+   * `brk_offsets_for_times` — `offset` of each input entry is the timestamp
+   * (ms); returns the same entries with `offset` = the earliest offset at or
+   * after that timestamp. Blocks up to `timeoutMs` (broker round-trip).
+   */
+  offsetsForTimes(
+    partitions: readonly TopicPartitionInput[],
+    timeoutMs: number,
+  ): TopicPartitionEntry[] {
+    const handle = this.assertOpen("offsetsForTimes");
+    const tpl = this.encodeTplPayload(partitions);
+    this.withGrowingBuffer("scratch", "brk_offsets_for_times", (buf) =>
+      this.native.brk_offsets_for_times(handle, tpl, tpl.length, buf, buf.length, timeoutMs),
+    );
+    return decodeTplBuffer(this.scratchBuf, { topics: this.topics });
+  }
+
   /** `brk_seek` — by topic NAME (cold path, no interned id needed). */
   seek(topic: string, partition: number, offset: number | bigint, timeoutMs: number): void {
     const handle = this.assertType(BRK_CLIENT_CONSUMER, "seek");

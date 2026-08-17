@@ -122,8 +122,9 @@ Runtime dependencies of `bun-rdkafka`: **0**. DevDeps: `typescript`, `@types/bun
 
 ```c
 // ---- common ----
-int32_t  brk_abi_version(void);
+int32_t  brk_abi_version(void);          // 2 since 0.2.0 (1: 0.1.x)
 const char* brk_librdkafka_version(void);
+const char* brk_features(void);          // ABI 2: builtin.features, cached static
 void*    brk_conf_new(void);
 int32_t  brk_conf_set(void* conf, const char* k, const char* v,
                       char* errstr, int32_t errstr_size);
@@ -170,6 +171,10 @@ int32_t  brk_commit(void* h, const uint8_t* tpl_buf, int32_t len, int32_t async)
 int32_t  brk_committed(void* h, const uint8_t* tpl_buf, int32_t tpl_len,
                        uint8_t* out_buf, int32_t out_cap, int32_t timeout_ms);
                        // tpl_len == 0 → current assignment
+int32_t  brk_offsets_for_times(void* h, const uint8_t* tpl_buf, int32_t tpl_len,
+                               uint8_t* out_buf, int32_t out_cap, int32_t timeout_ms);
+                       // ABI 2: offset in = timestamp ms, offset out = found offset;
+                       // any client type; first per-partition err fails the call
 int32_t  brk_seek(void* h, const char* topic, int32_t partition, int64_t offset,
                   int32_t timeout_ms);  // by topic name (cold path)
 int32_t  brk_assign(void* h, const uint8_t* tpl_buf, int32_t len, int32_t mode);

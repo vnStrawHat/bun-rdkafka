@@ -412,6 +412,41 @@ BRK_EXPORT int32_t brk_committed(void *hv, const uint8_t *tpl_buf,
   return r < 0 ? r : cnt;
 }
 
+BRK_EXPORT int32_t brk_offsets_for_times(void *hv, const uint8_t *tpl_buf,
+                                         int32_t tpl_len, uint8_t *out_buf,
+                                         int32_t out_cap, int32_t timeout_ms) {
+  brk_handle *h = brk_check(hv);
+  if (h == NULL) return BRK_ERR_INVALID_HANDLE;
+  if (tpl_buf == NULL || tpl_len < 4 || out_buf == NULL || out_cap < 4)
+    return BRK_ERR_BAD_ARGS;
+
+  rd_kafka_topic_partition_list_t *tpl = brk_tpl_decode(h, tpl_buf, tpl_len);
+  if (tpl == NULL) return BRK_ERR_DECODE;
+  rd_kafka_resp_err_t err = rd_kafka_offsets_for_times(h->rk, tpl, timeout_ms);
+  if (err == RD_KAFKA_RESP_ERR_NO_ERROR) {
+    /* Per-partition errors: format 2 carries no err field, so surface the
+     * first one as the call's error (same policy as brk_seek). */
+    for (int i = 0; i < tpl->cnt; i++) {
+      if (tpl->elems[i].err != RD_KAFKA_RESP_ERR_NO_ERROR) {
+        err = tpl->elems[i].err;
+        brk_set_err(h, BRK_KAFKA_ERR(err), "offsets_for_times: %s [%d]: %s",
+                    tpl->elems[i].topic, tpl->elems[i].partition,
+                    rd_kafka_err2str(err));
+        break;
+      }
+    }
+  }
+  if (err != RD_KAFKA_RESP_ERR_NO_ERROR) {
+    rd_kafka_topic_partition_list_destroy(tpl);
+    return BRK_KAFKA_ERR(err);
+  }
+  brk_wbuf w = {out_buf, out_cap, 0};
+  int32_t r = brk_tpl_encode(h, tpl, &w);
+  int32_t cnt = tpl->cnt;
+  rd_kafka_topic_partition_list_destroy(tpl);
+  return r < 0 ? r : cnt;
+}
+
 BRK_EXPORT int32_t brk_seek(void *hv, const char *topic, int32_t partition,
                             int64_t offset, int32_t timeout_ms) {
   brk_handle *h = brk_check(hv);

@@ -12,8 +12,8 @@
 /* Version                                                                     */
 /* ========================================================================== */
 
-/** `#define BRK_ABI_VERSION 1` */
-export const BRK_ABI_VERSION = 1;
+/** `#define BRK_ABI_VERSION 2` (2: + brk_features, brk_offsets_for_times) */
+export const BRK_ABI_VERSION = 2;
 
 /* ========================================================================== */
 /* Shim-layer error codes (-1 .. -99)                                          */

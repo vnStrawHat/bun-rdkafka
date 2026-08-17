@@ -158,6 +158,19 @@ export function librdkafkaVersion(): string {
 }
 
 /**
+ * librdkafka's `builtin.features` as a list (e.g. `["gzip", "snappy", "ssl",
+ * "sasl_scram", …]`) — upstream's `features` export. A FUNCTION for the same
+ * reason as {@link librdkafkaVersion}: triggers loading on the first call.
+ */
+export function features(): string[] {
+  const raw = loadNative().brk_features().toString();
+  return raw
+    .split(",")
+    .map((f) => f.trim())
+    .filter((f) => f.length > 0);
+}
+
+/**
  * Closes the library and clears the cache. Test-only — closing the library
  * while handles are alive is undefined behavior.
  * @internal

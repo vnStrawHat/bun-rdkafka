@@ -37,7 +37,10 @@ extern "C" {
 /* Version                                                                     */
 /* ========================================================================== */
 
-#define BRK_ABI_VERSION 1
+/* ABI history:
+ *   1 — initial release (0.1.x)
+ *   2 — added brk_features, brk_offsets_for_times (no format changes) */
+#define BRK_ABI_VERSION 2
 
 /* ========================================================================== */
 /* Error codes                                                                 */
@@ -221,6 +224,13 @@ BRK_EXPORT int32_t brk_abi_version(void);
  * pointer, do not free. */
 BRK_EXPORT const char *brk_librdkafka_version(void);
 
+/* Comma-separated `builtin.features` of the statically linked librdkafka,
+ * e.g. "gzip,snappy,ssl,sasl,regex,lz4,sasl_gssapi,sasl_plain,sasl_scram,
+ * plugins,zstd,sasl_oauthbearer,http,oidc". Computed once (via a temporary
+ * rd_kafka_conf_t) and cached in a static buffer — do not free. Empty string
+ * if the property could not be read (never NULL). ABI 2. */
+BRK_EXPORT const char *brk_features(void);
+
 /* Frees memory allocated by the shim (only used by cold-path APIs returning
  * char**). */
 BRK_EXPORT void brk_mem_free(void *p);
@@ -349,6 +359,19 @@ BRK_EXPORT int32_t brk_commit(void *h, const uint8_t *tpl_buf, int32_t len,
 BRK_EXPORT int32_t brk_committed(void *h, const uint8_t *tpl_buf,
                                  int32_t tpl_len, uint8_t *out_buf,
                                  int32_t out_cap, int32_t timeout_ms);
+
+/* rd_kafka_offsets_for_times: for every entry of tpl_buf (format 2, the
+ * `offset` field carries the TIMESTAMP in ms) looks up the earliest offset
+ * whose timestamp is >= that timestamp and writes the result as a tpl (format
+ * 2, `offset` = the found offset, or RD_KAFKA_OFFSET_END/-1 when no such
+ * message exists) into out_buf. Blocks up to timeout_ms (broker round-trip).
+ * Works on any client type. Returns the element count; a per-partition error
+ * (e.g. UNKNOWN_PARTITION) fails the whole call with BRK_KAFKA_ERR of the first
+ * failing partition. On BRK_ERR_BUFFER_TOO_SMALL the caller grows out_buf and
+ * retries (same convention as brk_committed). ABI 2. */
+BRK_EXPORT int32_t brk_offsets_for_times(void *h, const uint8_t *tpl_buf,
+                                         int32_t tpl_len, uint8_t *out_buf,
+                                         int32_t out_cap, int32_t timeout_ms);
 
 /* Seek by topic name (cold path — no interned id needed; always works right
  * after assign). */

@@ -105,6 +105,27 @@ BRK_EXPORT const char *brk_librdkafka_version(void) {
   return rd_kafka_version_str();
 }
 
+/* builtin.features, read once through a throwaway conf. Only ever called from
+ * the JS thread (bun:ffi is single-threaded), so a plain static is enough. */
+BRK_EXPORT const char *brk_features(void) {
+  static char features[1024];
+  static int loaded = 0;
+  if (!loaded) {
+    features[0] = '\0';
+    rd_kafka_conf_t *conf = rd_kafka_conf_new();
+    if (conf != NULL) {
+      size_t size = sizeof(features);
+      if (rd_kafka_conf_get(conf, "builtin.features", features, &size) !=
+          RD_KAFKA_CONF_OK)
+        features[0] = '\0';
+      rd_kafka_conf_destroy(conf);
+    }
+    features[sizeof(features) - 1] = '\0';
+    loaded = 1;
+  }
+  return features;
+}
+
 BRK_EXPORT void brk_mem_free(void *p) { free(p); }
 
 /* ========================================================================== */

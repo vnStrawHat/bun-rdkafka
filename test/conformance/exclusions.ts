@@ -70,13 +70,13 @@ export const EXCLUSIONS: readonly Exclusion[] = [
     milestone: "M8",
   },
   {
-    path: "rdkafka:module.features",
+    path: "rdkafka:module.features#kind",
     reason:
-      "Deliberate deviation for the same reason as librdkafkaVersion: " +
-      "`features: string[]` is a constant read from librdkafka at import time, " +
-      "incompatible with lazy-load. Also needs a shim symbol reading " +
-      "built.in.features. Will be provided as a `features()` function + a note " +
-      "MIGRATION.md ở M8.",
+      "Deliberate deviation for the same reason as librdkafkaVersion: upstream has " +
+      "`const features: string[]` (read from librdkafka at import time), bun-rdkafka " +
+      "has `features(): string[]` (lazy — no dlopen at import). The default export " +
+      "(`import Kafka from …; Kafka.features`) exposes it as an upstream-style lazy " +
+      "getter. To be noted in MIGRATION.md at M8.",
     milestone: "M8",
   },
 

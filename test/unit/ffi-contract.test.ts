@@ -70,7 +70,7 @@ describe("constants mirroring the header", () => {
 
   test("the header parses (sanity)", () => {
     expect(defines.size).toBeGreaterThan(25);
-    expect(defines.get("BRK_ABI_VERSION")).toBe(1);
+    expect(defines.get("BRK_ABI_VERSION")).toBe(2);
   });
 
   test("every integer #define has a TypeScript constant with the same name and value", () => {
@@ -87,7 +87,7 @@ describe("constants mirroring the header", () => {
   });
 
   test("hard-pinned values guard against editing both sides by mistake", () => {
-    expect(types.BRK_ABI_VERSION).toBe(1);
+    expect(types.BRK_ABI_VERSION).toBe(2);
     expect(types.BRK_OK).toBe(0);
     expect(types.BRK_ERR_BUFFER_TOO_SMALL).toBe(-1);
     expect(types.BRK_ERR_KAFKA_OFFSET).toBe(-1000);

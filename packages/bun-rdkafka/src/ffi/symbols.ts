@@ -26,6 +26,8 @@ export const brkSymbols = {
   brk_abi_version: { args: [], returns: "i32" },
   /** `const char *brk_librdkafka_version(void)` */
   brk_librdkafka_version: { args: [], returns: "cstring" },
+  /** `const char *brk_features(void)` (ABI 2) */
+  brk_features: { args: [], returns: "cstring" },
   /** `void brk_mem_free(void *p)` */
   brk_mem_free: { args: ["ptr"], returns: "void" },
 
@@ -100,6 +102,11 @@ export const brkSymbols = {
    *                        uint8_t *out_buf, int32_t out_cap, int32_t timeout_ms)`
    */
   brk_committed: { args: ["ptr", "ptr", "i32", "ptr", "i32", "i32"], returns: "i32" },
+  /**
+   * `int32_t brk_offsets_for_times(void *h, const uint8_t *tpl_buf, int32_t tpl_len,
+   *                                uint8_t *out_buf, int32_t out_cap, int32_t timeout_ms)` (ABI 2)
+   */
+  brk_offsets_for_times: { args: ["ptr", "ptr", "i32", "ptr", "i32", "i32"], returns: "i32" },
   /** `int32_t brk_seek(void *h, const char *topic, int32_t partition, int64_t offset, int32_t timeout_ms)` */
   brk_seek: { args: ["ptr", "cstring", "i32", "i64", "i32"], returns: "i32" },
   /** `int32_t brk_assign(void *h, const uint8_t *tpl_buf, int32_t len, int32_t mode)` */
