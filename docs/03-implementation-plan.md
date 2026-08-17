@@ -203,6 +203,7 @@ binary protocol, the PollScheduler, no event-loop blocking, no crashes.
       comments, bench/RESULTS.md. New code/docs from M6d onward are written in English
       directly.
 - [ ] README (quick start, comparison with upstream — including the fact that upstream does not run on Bun 1.4 and the M6 bench table), typedoc API site, MIGRATION.md from confluent-kafka-javascript, CONTRIBUTING (local native build, running integration).
+- [x] Stream API landed (2026-08-17): `Producer.createWriteStream` / `KafkaConsumer.createReadStream` + module-level `createReadStream`/`createWriteStream` (`ProducerStream` / `ConsumerStream` over `node:stream`), conformance exclusions removed, unit + integration tests, `examples/streams.ts`.
 - [ ] Re-walk the v1.0 acceptance checklist in spec §8; close remaining differences or record them publicly.
 - [ ] Tag `v1.0.0`.
 
