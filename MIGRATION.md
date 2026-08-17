@@ -26,7 +26,7 @@ If you are migrating from **KafkaJS** (the original library) rather than from co
 
 | Area | Difference | Why |
 |---|---|---|
-| `librdkafkaVersion`, `features` | Functions (`librdkafkaVersion()`), not string/array constants. `features()` lands with the next ABI addition. | Constants would force the native library to load at import time; bun-rdkafka loads it lazily so the package imports (and unit-tests) without a compiled binary. |
+| `librdkafkaVersion`, `features` | Functions (`librdkafkaVersion()`, `features()`), not string/array constants. The default export additionally exposes them as upstream-style lazy getters (`Kafka.features`). | Constants would force the native library to load at import time; bun-rdkafka loads it lazily so the package imports (and unit-tests) without a compiled binary. |
 | Client `name` | `"producer#1"` format instead of `"rdkafka#producer-1"`. | Simplification; change is cosmetic. |
 | Producer per-record errors | An error for record *N* surfaces on the *next* `produce()` call (or at `flush()`), not on the call that staged it. Queue-full from the message-count cap (`js.producer.max.pending`, default follows `queue.buffering.max.messages`) still throws synchronously. Byte-based caps (`queue.buffering.max.kbytes`) surface via delivery-report errors. | `produce()` stages records and crosses FFI once per microtask — the main producer performance win. |
 | Delivery-report `key` | Keeps the type you passed in (a string stays a string); upstream always converts to Buffer. | Avoids information loss; revisit on demand. |
@@ -45,8 +45,9 @@ If you are migrating from **KafkaJS** (the original library) rather than from co
 | `AdminClient.create()` | Does not block; every method internally awaits readiness. Observable behavior is the same (you can call methods immediately after `create()`). | Non-blocking policy. |
 | `OffsetSpec` | A constant object (`OffsetSpec.EARLIEST/LATEST/MAX_TIMESTAMP`), not a class; pass timestamps as plain numbers to `listOffsets()`. Constant usage is upstream-identical. | No wrapper objects on the FFI path. |
 | `setSaslCredentialProvider` (KafkaJS) | Not provided — this name is a bug in upstream's `.d.ts`; their implementation is `setSaslCredentials()`, which bun-rdkafka provides on all three API layers (verified with live re-authentication tests). | We follow upstream's implementation, not its typings. |
-| Extra `js.*` config namespace | bun-rdkafka-specific options: `js.poll.idle.max.ms`, `js.consume.buffer.bytes`, `js.producer.max.pending`, `js.consumer.max.batch.size`, etc. Unknown `js.*` keys throw (typo protection). | Runtime tuning knobs that have no librdkafka equivalent. |
-
+| Extra `js.*` config namespace | bun-rdkafka-specific options (`js.poll.idle.max.ms`, `js.consume.buffer.bytes`, `js.producer.max.pending`, `js.consumer.max.batch.size`, the experimental `js.consume.prefetch`, …) — full table with recommended values in the README, "Configuration: `js.*` options". Unknown `js.*` keys throw (typo protection). | Runtime tuning knobs that have no librdkafka equivalent. |
+| Typed configs | Constructor configs are typed like upstream's (`ProducerGlobalConfig`/`ConsumerGlobalConfig`/… generated from librdkafka's `CONFIGURATION.md`, plus the `kafkaJS` block types `KafkaConfig`/`ProducerConfig`/`ConsumerConfig`/`AdminConfig` and the `*ConstructorConfig` wrappers). Differences: bun-rdkafka's callback-API types are named `ProducerConfig` / `KafkaConsumerConfig` / `AdminClientConfig` (= librdkafka properties + `js.*` + the callback properties), topic-level properties are accepted in the global conf, `kafkaJS.brokers`/`groupId` are optional (may come via `bootstrap.servers`/`group.id`), and the client `kafkaJS` blocks also accept the common keys. Enum-valued properties are literal unions, so a config built from `string`-typed variables needs an annotation (`as const` or the config type). | Editor completion/typo protection; runtime validation is unchanged. |
+| Typed events | `client.on(event, listener)` is typed against the client's event map (`ClientEventMap`/`ProducerEventMap`/`KafkaConsumerEventMap`), as upstream's `Client<Events>`. bun-rdkafka additionally types the consumer's `warning` event and the listener parameters of every event. | Same idea as upstream, stricter payload types. |
 | Stream API (`createReadStream` / `createWriteStream`) | Same options, events, `stream.producer` / `stream.consumer` fields and `close(cb)`. Internals follow the modern `node:stream` lifecycle: `autoClose` maps to `autoDestroy`, so `stream.destroy()`, `pipeline()` and breaking out of `for await` also release the client; `ProducerStream` flushes before disconnecting; `ERR__QUEUE_FULL` retries with a 5→500 ms backoff instead of a fixed 500 ms; a byte-mode `ConsumerStream` skips tombstones (upstream pushes `null`, which ends the stream); `topics` may be omitted to read the consumer's existing subscription/assignment. | Built on Bun's `node:stream` rather than ported 1:1. |
 
 Also note the tuning recommendation that applies to any librdkafka client but bites harder here: set `fetch.queue.backoff.ms=10` on fast consumers (see README “Tuning notes”).
@@ -72,14 +73,10 @@ See `examples/streams.ts` for a runnable version.
 
 ## 3. Not yet implemented
 
-Each entry is tracked in `test/conformance/exclusions.ts` with a milestone; the conformance suite fails if an entry ships but stays on this list.
+Everything in upstream's `.d.ts` is implemented except the entries below and the "not applicable" list in §4 (the conformance suite fails if an entry ships but stays excluded). `offsetsForTimes`, `getLastError`, `features()` and the HighLevelProducer topic-aware serializers, listed here in earlier versions, have shipped.
 
 | API | Notes |
 |---|---|
-| `KafkaConsumer.offsetsForTimes` | Needs a new async shim entry point (must not block the event loop). |
-| `Client.getLastError` | Use the `event.error` event, as upstream itself recommends. |
-| `HighLevelProducer.setTopicKeySerializer` / `setTopicValueSerializer` | Global `setKeySerializer`/`setValueSerializer` are available. |
-| `features` (as a function) | Pending one shim symbol. |
 | SASL OAUTHBEARER OIDC (`sasl.oauthbearer.method=oidc`) | Requires rebuilding the shim with `WITH_CURL=ON`. Custom token-refresh callbacks work today. |
 | `createTopics` `validateOnly`/`waitForLeaders`/`replicaAssignment`, `fetchOffsets` `resolveOffsets` | Throw “not implemented” — **exactly as upstream does**. |
 
